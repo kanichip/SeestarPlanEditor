@@ -112,15 +112,19 @@ class TargetList(QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setHeaderLabels(['対象', '開始', '分', 'LPフィルター', '回転°'])
+        self.setHeaderLabels(['対象', '開始', '分', 'LP', '回転', 'No.'])
+        self.header().moveSection(5, 0)
         self.setIconSize(QSize(75, 50))
         self.setRootIsDecorated(False)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.header().setStretchLastSection(False)
         self.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column, width in enumerate((100, 60, 55, 80, 80)):
+        for column, width in enumerate((100, 40, 40, 40, 40)):
             self.setColumnWidth(column, width)
+        self.header().setMinimumSectionSize(20)
+        self.setColumnWidth(5, 25)
 
     def dropEvent(self, event):
         blocker = QSignalBlocker(self)
@@ -140,9 +144,9 @@ class TargetList(QTreeWidget):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Seestar S30 Pro — 撮影プラン / 望遠')
-        self.resize(1120, 790)
-        self.setMinimumSize(1000, 730)
+        self.setWindowTitle('Seestar Plan Editor')
+        self.resize(650, 650)
+        self.setMinimumSize(600, 600)
         self.targets = []
         self.editing = None
         self.dirty = False
@@ -157,10 +161,10 @@ class App(QMainWindow):
         self.frame_deselected = False
         self.numeric_values = {}
         self.v = {key: QLineEdit(value) for key, value in {
-            'url': 'http://localhost:8090', 'plan': '今夜の撮影',
+            'url': 'http://localhost:8090', 'plan': date.today().strftime('%Y%m%d'),
             'name': '', 'ra': '', 'dec': '', 'start': '21:00', 'duration': '30',
             'angle': '0', 'scale': '1.0', 'fov_width': '2.25', 'fov_height': '4.0',
-            'intensity': '50',
+            'intensity': '100',
         }.items()}
         self.lp = QCheckBox('LPフィルター')
         self.framing = QCheckBox('回転フレーミングを有効化（実機未検証）')
@@ -179,14 +183,17 @@ class App(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         title = QLabel('S30 PRO  /  撮影プラン')
         font = title.font()
-        font.setPointSize(19)
+        font.setPointSize(10)
         font.setBold(True)
         title.setFont(font)
         layout.addWidget(title)
         top = QHBoxLayout()
-        top.addWidget(QLabel('Stellarium URL'))
-        top.addWidget(self.v['url'])
-        self.add_button(top, '選択天体を取得', self.fetch)
+        fetch_button = self.add_button(top, '選択天体を取得', self.fetch)
+        fetch_font = fetch_button.font()
+        fetch_font.setPointSize(12)
+        fetch_font.setBold(True)
+        fetch_button.setFont(fetch_font)
+        fetch_button.setStyleSheet('background-color: #d9edff; padding: 6px 12px;')
         top.addWidget(QLabel('カメラ：望遠固定'))
         top.addStretch()
         layout.addLayout(top)
@@ -194,7 +201,9 @@ class App(QMainWindow):
         plan.addWidget(QLabel('プラン名'))
         self.v['plan'].setMaximumWidth(100)
         plan.addWidget(self.v['plan'], 1)
-        plan.addWidget(QLabel('開始時刻 (HH:MM)'))
+        self.today_label = QLabel(date.today().strftime('%Y%m%d'))
+        #plan.addWidget(self.today_label)
+        plan.addWidget(QLabel('開始時刻'))
         self.v['start'].setMaximumWidth(75)
         plan.addWidget(self.v['start'])
         for label, action in [('共有QRコード', self.share), ('保存', self.save), ('開く', self.load)]:
@@ -203,36 +212,49 @@ class App(QMainWindow):
         body = QHBoxLayout()
         layout.addLayout(body, 1)
         edit = QGroupBox('対象とフレーミング')
-        form = QFormLayout(edit)
-        for label, key in [('天体名', 'name'), ("赤経 J2000 (° ' '')", 'ra'),
-                           ("赤緯 J2000 (° ' '')", 'dec'), ('撮影時間 (分)', 'duration')]:
+        edit.setFixedWidth(220)
+        editor_layout = QVBoxLayout(edit)
+        form = QFormLayout()
+        editor_layout.addLayout(form)
+        editor_layout.addStretch()
+        for label, key in [('天体名', 'name'), ("赤経", 'ra'),
+                           ("赤緯", 'dec'), ('撮影時間', 'duration')]:
             form.addRow(label, self.v[key])
         form.addRow(self.lp)
-        form.addRow(self.framing)
-        form.addRow('回転角 (°)', self.v['angle'])
+        framing_columns = QHBoxLayout()
+        rotation_column = QVBoxLayout()
+        rotation_column.addWidget(QLabel('回転角 (°)'))
+        rotation_column.addWidget(self.v['angle'])
         self.angle_slider = QSlider(Qt.Orientation.Horizontal)
-        self.angle_slider.setRange(-360, 360)
+        self.angle_slider.setRange(-180, 180)
         self.angle_slider.setSingleStep(1)
-        form.addRow(self.angle_slider)
-        form.addRow('辺の倍率 (1〜2)', self.v['scale'])
+        rotation_column.addWidget(self.angle_slider)
+        scale_column = QVBoxLayout()
+        scale_column.addWidget(QLabel('辺の倍率 (1〜2)'))
+        scale_column.addWidget(self.v['scale'])
+        scale_column.setAlignment(Qt.AlignmentFlag.AlignTop)
+        framing_columns.addLayout(rotation_column, 1)
+        framing_columns.addLayout(scale_column, 1)
+        form.addRow(framing_columns)
         frame_controls = QHBoxLayout()
         frame_controls.addWidget(QLabel('枠の濃さ'))
         self.intensity_slider = QSlider(Qt.Orientation.Horizontal)
         self.intensity_slider.setRange(50, 100)
-        self.intensity_slider.setValue(50)
+        self.intensity_slider.setValue(100)
         frame_controls.addWidget(self.intensity_slider)
         frame_controls.addWidget(QLabel('枠の太さ'))
         self.thickness_slider = QSlider(Qt.Orientation.Horizontal)
         self.thickness_slider.setRange(1, 10)
-        self.thickness_slider.setValue(3)
+        self.thickness_slider.setValue(10)
         frame_controls.addWidget(self.thickness_slider)
         form.addRow(frame_controls)
-        actions = QHBoxLayout()
+        actions = QVBoxLayout()
         self.add_button(actions, '追加 / 選択行を更新', self.commit)
         self.add_button(actions, '新規対象', self.reset)
         form.addRow(actions)
-        form.addRow('Stellarium 横画角 (°)', self.v['fov_width'])
-        form.addRow('Stellarium 縦画角 (°)', self.v['fov_height'])
+        for control in (self.v['url'], self.v['fov_width'], self.v['fov_height'], self.framing):
+            control.setParent(outer)
+            control.hide()
         body.addWidget(edit)
         right = QVBoxLayout()
         body.addLayout(right, 1)
@@ -307,7 +329,7 @@ class App(QMainWindow):
 
     def sync_angle_slider(self):
         try:
-            value = round(number(self.v['angle'].text(), -360, 360, '回転角'))
+            value = round(number(self.v['angle'].text(), -180, 180, '回転角'))
         except ValueError:
             return
         blocker = QSignalBlocker(self.angle_slider)
@@ -346,7 +368,7 @@ class App(QMainWindow):
 
     def format_number(self, key):
         try:
-            low, high = (0, 24) if key == 'ra' else (-90, 90) if key == 'dec' else (-360, 360)
+            low, high = (0, 24) if key == 'ra' else (-90, 90) if key == 'dec' else (-180, 180)
             self.set_number(key, self.input_number(key, low, high, key))
         except ValueError:
             pass
@@ -425,7 +447,7 @@ class App(QMainWindow):
             return
         try:
             has_position = bool(self.v['ra'].text().strip() and self.v['dec'].text().strip())
-            angle = self.input_number('angle', -360, 360, '回転角') if self.framing.isChecked() else 0
+            angle = self.input_number('angle', -180, 180, '回転角') if self.framing.isChecked() else 0
             scale = number(self.v['scale'].text(), 1, 2, '辺の倍率') ** 2 if self.framing.isChecked() else 1
             args = (self.v['url'].text(), self.input_number('ra', 0, 24, '赤経') if has_position else None,
                     self.input_number('dec', -90, 90, '赤緯') if has_position else None, angle, scale,
@@ -521,7 +543,7 @@ class App(QMainWindow):
             if self.framing.isChecked():
                 mosaic = copy.deepcopy(t.get('mosaic') or {})
                 mosaic.update(scale=number(self.v['scale'].text(), 1, 2, '辺の倍率') ** 2,
-                              angle=self.input_number('angle', -360, 360, '回転角'))
+                              angle=self.input_number('angle', -180, 180, '回転角'))
                 mosaic['star_map_angle'] = mosaic['angle']
                 t['mosaic'] = mosaic
             else:
@@ -548,8 +570,9 @@ class App(QMainWindow):
             angle = (t.get('mosaic') or {}).get('angle')
             item = QTreeWidgetItem([t['target_name'], clock(t['start_min']), str(t['duration_min']),
                                     'ON' if t['lp_filter'] else 'OFF',
-                                    f'{angle:.0f}' if angle is not None else '—'])
+                                    f'{angle:.0f}' if angle is not None else '—', str(i + 1)])
             item.setData(0, Qt.ItemDataRole.UserRole, i)
+            item.setTextAlignment(5, Qt.AlignmentFlag.AlignCenter)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
             pixmap = render_target_card(t, plan_date)
             item.setIcon(0, QIcon(pixmap))

@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 
@@ -164,10 +165,15 @@ def selected_object(base_url):
     if parsed.scheme != 'http' or not parsed.hostname:
         raise ValueError('StellariumのURLは http://localhost:8090 の形式で指定してください。')
     url = base_url.rstrip('/') + '/api/objects/info?' + urlencode({'format': 'json'})
-    with urlopen(url, timeout=8) as response:
-        info = json.load(response)
+    try:
+        with urlopen(url, timeout=8) as response:
+            info = json.load(response)
+    except HTTPError as exc:
+        if exc.code == 404:
+            raise ValueError('stellarium で座標を指定してください。') from None
+        raise
     if not isinstance(info, dict) or 'raJ2000' not in info or 'decJ2000' not in info:
-        raise ValueError('Stellariumで天体を選択してください。J2000座標を取得できませんでした。')
+        raise ValueError('stellarium で座標を指定してください。')
     # StelObject::getInfoMap supplies RA in degrees, not hours.
     ra = number(info['raJ2000'], 0, 360, 'Stellarium赤経') / 15 % 24
     dec = number(info['decJ2000'], -90, 90, 'Stellarium赤緯')
