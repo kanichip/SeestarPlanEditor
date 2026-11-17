@@ -160,8 +160,8 @@ class App(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Seestar Plan Editor')
-        self.resize(400, 650)
-        self.setMinimumSize(400, 600)
+        self.resize(350, 450)
+        self.setMinimumSize(350, 400)
         self.targets = []
         self.editing = None
         self.dirty = False
@@ -203,7 +203,7 @@ class App(QMainWindow):
         outer = QWidget()
         self.setCentralWidget(outer)
         layout = QVBoxLayout(outer)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setContentsMargins(16, 0, 16, 16)
         self.model_combo = QComboBox()
         self.model_combo.addItems(list(MODEL_FOV))
         self.model_combo.setCurrentText('S50 Pro')
@@ -256,24 +256,35 @@ class App(QMainWindow):
         list_actions.addWidget(self.show_all)
         self.add_button(list_actions, '選択対象を削除', self.remove)
         right.addLayout(list_actions)
-        note = QLabel('共有後、QRコードをSeestarアプリで読み込みます。\n'
+        self.guide_label = QLabel('共有後、QRコードをSeestarアプリで読み込みます。\n'
                       '撮影開始時刻・日付はアプリ側でも確認してください。\n'
                       'Seestarメニューから本体への接続・プラン転送ができます。')
-        note.setWordWrap(True)
-        right.addWidget(note)
+        self.guide_label.setWordWrap(True)
+        right.addWidget(self.guide_label)
+        self.guide_label.hide()
         layout.addWidget(self.status)
+        self.status.hide()
         self.connection_status = QLabel('Seestar：未接続')
         self.statusBar().addPermanentWidget(self.connection_status)
         file_menu = self.menuBar().addMenu('ファイル')
         file_menu.addAction('保存', self.save).setShortcut('Ctrl+S')
         file_menu.addAction('開く', self.load).setShortcut('Ctrl+O')
+        file_menu.addSeparator()
+        self.always_on_top_action = file_menu.addAction('常に手前に表示')
+        self.always_on_top_action.setCheckable(True)
+        self.always_on_top_action.toggled.connect(self.set_always_on_top)
+        self.always_on_top_action.setChecked(True)
         seestar_menu = self.menuBar().addMenu('Seestar')
         self.connect_action = seestar_menu.addAction('接続', self.connect_seestar)
         self.share_action = seestar_menu.addAction('共有QR', self.share)
         self.transfer_action = seestar_menu.addAction('プラン転送', self.transfer_plan)
         self.transfer_action.setEnabled(False)
-        frame_menu = self.menuBar().addMenu('撮影枠')
-        frame_menu.addAction('枠の濃さ・太さを調整', self.frame_dialog.edit)
+        other_menu = self.menuBar().addMenu('その他')
+        other_menu.addAction('撮影枠', self.frame_dialog.edit)
+        self.guide_action = other_menu.addAction('ガイド表示')
+        self.guide_action.setCheckable(True)
+        self.guide_action.toggled.connect(self.guide_label.setVisible)
+        self.guide_action.toggled.connect(self.status.setVisible)
         self.tree.itemSelectionChanged.connect(self.select)
         self.tree.reordered.connect(self.reorder_targets)
         self.tree.itemDoubleClicked.connect(self.edit_target)
@@ -320,6 +331,12 @@ class App(QMainWindow):
             if key == ''.join(choice.casefold().split()):
                 self.model_combo.setCurrentText(choice)
                 return
+
+    def set_always_on_top(self, enabled):
+        visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+        if visible:
+            self.show()
 
     def clear_startup_frames(self):
         url = self.v['url'].text()
@@ -685,7 +702,10 @@ class App(QMainWindow):
         try:
             self.guard_form()
             p = build_plan(self.v['plan'].text(), self.targets, self.v['start'].text())
-            path = QFileDialog.getSaveFileName(self, 'プランJSONを保存', '', '撮影プラン (*.json)')[0]
+            filename = p['plan_name']
+            if not filename.lower().endswith('.json'):
+                filename += '.json'
+            path = QFileDialog.getSaveFileName(self, 'プランJSONを保存', filename, '撮影プラン (*.json)')[0]
             if path:
                 Path(path).write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding='utf-8')
                 self.dirty = False
@@ -741,29 +761,42 @@ class App(QMainWindow):
             return
         def work():
             try:
-                return SeestarClient.discover(), None
+                return SeestarClient.discover_devices(), None
             except Exception as exc:
                 return [], str(exc)
 
         def done(result):
             addresses, error = result
             self.status.setText('自動検出できませんでした。IPアドレスを直接入力できます。' if error
-                                else '接続するSeestarのIPアドレスを選択してください。')
+                                else '接続するSeestarの機種名を選択してください。')
             self.choose_seestar(addresses)
 
         self.run_job(work, done)
 
     def choose_seestar(self, addresses):
-        choices = list(addresses)
-        if self.seestar_host not in choices:
-            choices.append(self.seestar_host)
-        current = choices.index(self.seestar_host) if self.seestar is not None else 0
-        host, accepted = QInputDialog.getItem(
+        devices = list(addresses)
+        choices = []
+        for i, device in enumerate(devices):
+            model = device['model']
+            repeated = sum(d['model'] == model for d in devices) > 1
+            choices.append(f'{model} ({i + 1})' if repeated else model)
+        manual = 'IPアドレスを直接入力…'
+        choices.append(manual)
+        current = next((i for i, d in enumerate(devices)
+                        if d['host'] == self.seestar_host), 0)
+        selected, accepted = QInputDialog.getItem(
             self, 'Seestarに接続',
-            '検出したIPアドレスを選択、または直接入力してください',
-            choices, current, True)
+            '接続する機種を選択してください',
+            choices, current, False)
         if not accepted:
             return
+        if selected == manual:
+            host, accepted = QInputDialog.getText(
+                self, 'Seestarに接続', 'IPアドレスを入力してください', text=self.seestar_host)
+            if not accepted:
+                return
+        else:
+            host = devices[choices.index(selected)]['host']
         try:
             client = SeestarClient(host)
         except ValueError:
@@ -771,7 +804,7 @@ class App(QMainWindow):
             return
         self.seestar = None
         self.seestar_host = client.host
-        self.connection_status.setText(f'Seestar：{client.host} に接続中')
+        self.connection_status.setText('Seestar：接続中')
 
         def work():
             try:
@@ -792,9 +825,10 @@ class App(QMainWindow):
                      or state.get('product_model') or state.get('model'))
             if model:
                 self.select_connected_model(model)
-            self.connection_status.setText(f'Seestar：{client.host} 接続確認済み')
+            model_name = str(model) if model else '機種名不明'
+            self.connection_status.setText(f'Seestar：{model_name} 接続確認済み')
             self.update_seestar_actions()
-            self.status.setText(f'Seestarに接続しました：{client.host}')
+            self.status.setText(f'Seestarに接続しました：{model_name}')
 
         self.run_job(work, done)
 

@@ -17,6 +17,47 @@ PowerShellの場合（プロジェクトフォルダー内）：
 .\.venv\Scripts\python.exe main.py
 ```
 
+## Windows実行ファイルのビルド
+
+Python 3.12（64bit）で動作確認しています。初回はプロジェクトフォルダー内で、ビルド専用の環境を作成して依存パッケージをインストールします。
+
+```powershell
+python -m venv .build-venv
+.\.build-venv\Scripts\python.exe -m pip install -r requirements-build.txt
+```
+
+以降は次のバッチでビルドできます。
+
+```powershell
+.\build_onedir.bat
+```
+
+`SeestarPlanEditor.spec` を使用した標準の **onedir** ビルドです。PySide6・Qt・shiboken6の特別な除外・再配置処理は行わず、PyInstallerの標準フックで収集します。依存ファイルは `contents_directory='_internal'` により、次の構成にまとめます。
+
+```text
+dist/
+└── SeestarPlanEditor/
+    ├── SeestarPlanEditor.exe
+    ├── licenses/
+    │   ├── LGPL-3.0.txt
+    │   └── GPL-3.0.txt
+    └── _internal/
+        ├── PySide6/
+        ├── shiboken6/
+        ├── frame.png
+        └── その他の実行時依存ファイル
+```
+
+配布するときは **`dist/SeestarPlanEditor` フォルダー全体** をコピーしてください。実行先にPythonをインストールする必要はありません。ビルド元に `seestar.pem` がある場合は `_internal` に同梱し、実行時に参照します。
+
+再ビルド前に、配布先のEXEを終了してください。`dist/SeestarPlanEditor` は自動で削除・作り直されるため、プランJSONなどの保存先は別の場所にしてください。手動での削除は不要です。
+
+バッチを使わず直接ビルドする場合は、次のコマンドを実行します。
+
+```powershell
+.\.build-venv\Scripts\python.exe -m PyInstaller --noconfirm SeestarPlanEditor.spec
+```
+
 ## Stellariumの設定
 
 1. F2 → プラグイン → Remote Control（リモートコントロール）を開き、「起動時に実行」を有効にしてStellariumを再起動します。
@@ -60,6 +101,22 @@ Stellariumとこのアプリは同じPCで実行してください。描画に�
 ```
 
 時刻の日またぎ、重複検出、座標変換、回転パラメーターの保持をオフラインで検証します。共有サービスや本体との通信には実環境での確認が必要です。
+
+## ライセンスについて
+
+本ソフトウェアは、GUIライブラリとして PySide6（Qt for Python）を使用しています。  
+PySide6およびQtの関連ライブラリは、LGPL v3などのオープンソースライセンスに基づいて提供されています。  
+本ソフトウェアでは、Qt関連ライブラリを外部ファイルとして配置し、利用者が互換性のあるライブラリに交換できる構成としています。  
+PySide6公式サイト：https://doc.qt.io/qtforpython-6/  
+Qtライセンス情報：https://www.qt.io/development/open-source-lgpl-obligations  
+LGPL v3全文：https://www.gnu.org/licenses/lgpl-3.0.html  
+
+本ソフトウェアは、Seestar望遠鏡との通信および制御に seestarpy 0.8.0 を使用しています。  
+seestarpyは GNU General Public License version 3（GPL v3） に基づいて公開されているオープンソースライブラリです。  
+seestarpy公式サイト：https://github.com/astronomyk/seestarpy  
+ライセンス：GPL v3  
+ライセンス全文：https://www.gnu.org/licenses/gpl-3.0.html  
+seestarpyの著作権は、各権利者に帰属します。
 
 ## 参照
 

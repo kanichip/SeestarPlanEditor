@@ -12,6 +12,20 @@ class SeestarClient:
         connection.discover(quiet=True)
         return list(dict.fromkeys(connection.AVAILABLE_IPS.values()))
 
+    @classmethod
+    def discover_devices(cls):
+        devices = []
+        for host in cls.discover():
+            try:
+                state = cls(host).connect()
+                device = state.get('device') or {}
+                model = (device.get('product_model') or device.get('model')
+                         or state.get('product_model') or state.get('model'))
+            except Exception:
+                model = None
+            devices.append({'host': host, 'model': str(model) if model else '機種名不明'})
+        return devices
+
     @staticmethod
     def check_response(response):
         if not isinstance(response, dict):
