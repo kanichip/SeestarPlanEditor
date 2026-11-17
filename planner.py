@@ -174,8 +174,12 @@ def selected_object(base_url):
         raise
     if not isinstance(info, dict) or 'raJ2000' not in info or 'decJ2000' not in info:
         raise ValueError('stellarium で座標を指定してください。')
-    # StelObject::getInfoMap supplies RA in degrees, not hours.
-    ra = number(info['raJ2000'], 0, 360, 'Stellarium赤経') / 15 % 24
+    # Stellarium may return signed longitudes (e.g. NGC 7000: -45 degrees).
+    # Wrap finite degrees before converting to Seestar's RA hours.
+    ra_degrees = float(info['raJ2000'])
+    if not math.isfinite(ra_degrees):
+        raise ValueError('Stellarium赤経が有効な数値ではありません。')
+    ra = (ra_degrees % 360) / 15
     dec = number(info['decJ2000'], -90, 90, 'Stellarium赤緯')
     name = info.get('name') or info.get('localized-name') or info.get('designation') or info.get('english-name')
     if not name:

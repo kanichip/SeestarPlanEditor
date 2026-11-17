@@ -1,4 +1,4 @@
-"""Seestar S30 Pro telephoto plan editor using PySide6."""
+"""Seestar telephoto plan editor using PySide6."""
 from __future__ import annotations
 
 import copy
@@ -15,15 +15,30 @@ from pathlib import Path
 from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QAbstractItemView, QCheckBox, QDialog, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPushButton, QSlider, QTreeWidget,
+    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+    QMainWindow, QMessageBox, QPushButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
+
+from target_dialog import TargetDialog
+from frame_dialog import FrameDialog
+from seestar_client import SeestarClient
 
 from planner import (build_plan, calculate_altitude, clear_stellarium_frames, clock, coordinate_text,
                      draw_stellarium_frame, number, parse_coordinate,
                      schedule_targets, selected_object)
+
+
+# Approximate telephoto field of view (short edge, long edge), in degrees.
+# Pro/S50: https://us.seestar.com/blogs/review/s50-pro-s30-pro-vs-s50-has-a-new-star-king-been-born
+# S30: same pixel dimensions/pitch as S50, with a 150 mm rather than 250 mm lens.
+MODEL_FOV = {
+    'S30': (1.20, 2.13),
+    'S50': (0.72, 1.28),
+    'S30 Pro': (2.24, 3.99),
+    'S50 Pro': (1.38, 2.45),
+}
 
 
 def render_target_card(target: dict, plan_date: date, width: int = 75, height: int = 50,
@@ -145,14 +160,16 @@ class App(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Seestar Plan Editor')
-        self.resize(650, 650)
-        self.setMinimumSize(600, 600)
+        self.resize(400, 650)
+        self.setMinimumSize(400, 600)
         self.targets = []
         self.editing = None
         self.dirty = False
         self.form_dirty = False
         self.jobs = queue.Queue()
         self.busy = False
+        self.seestar = None
+        self.seestar_host = '10.0.0.1'
         self.stellarium_frame_enabled = False
         self.stellarium_selection_start = None
         self.stellarium_plan_dates = {}
@@ -163,10 +180,16 @@ class App(QMainWindow):
         self.v = {key: QLineEdit(value) for key, value in {
             'url': 'http://localhost:8090', 'plan': date.today().strftime('%Y%m%d'),
             'name': '', 'ra': '', 'dec': '', 'start': '21:00', 'duration': '30',
-            'angle': '0', 'scale': '1.0', 'fov_width': '2.25', 'fov_height': '4.0',
+            'angle': '0', 'scale': '1.0',
+            'fov_width': str(MODEL_FOV['S50 Pro'][0]),
+            'fov_height': str(MODEL_FOV['S50 Pro'][1]),
             'intensity': '100',
         }.items()}
-        self.lp = QCheckBox('LPフィルター')
+        self.target_dialog = TargetDialog(self)
+        self.v.update(self.target_dialog.v)
+        self.lp = self.target_dialog.lp
+        self.angle_slider = self.target_dialog.angle_slider
+        self.target_dialog.buttons.accepted.connect(self.commit)
         self.framing = QCheckBox('回転フレーミングを有効化（実機未検証）')
         self.show_all = QPushButton('全表示')
         self.show_all.setCheckable(True)
@@ -181,12 +204,20 @@ class App(QMainWindow):
         self.setCentralWidget(outer)
         layout = QVBoxLayout(outer)
         layout.setContentsMargins(16, 16, 16, 16)
-        title = QLabel('S30 PRO  /  撮影プラン')
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(list(MODEL_FOV))
+        self.model_combo.setCurrentText('S50 Pro')
+        title = self.model_combo
         font = title.font()
         font.setPointSize(10)
         font.setBold(True)
         title.setFont(font)
-        layout.addWidget(title)
+        model_row = QHBoxLayout()
+        model_row.addWidget(title)
+        self.fov_label = QLabel()
+        model_row.addWidget(self.fov_label)
+        model_row.addStretch()
+        layout.addLayout(model_row)
         top = QHBoxLayout()
         fetch_button = self.add_button(top, '選択天体を取得', self.fetch)
         fetch_font = fetch_button.font()
@@ -200,80 +231,52 @@ class App(QMainWindow):
         plan = QHBoxLayout()
         plan.addWidget(QLabel('プラン名'))
         self.v['plan'].setMaximumWidth(100)
-        plan.addWidget(self.v['plan'], 1)
+        plan.addWidget(self.v['plan'])
         self.today_label = QLabel(date.today().strftime('%Y%m%d'))
         #plan.addWidget(self.today_label)
         plan.addWidget(QLabel('開始時刻'))
         self.v['start'].setMaximumWidth(75)
         plan.addWidget(self.v['start'])
-        for label, action in [('共有QRコード', self.share), ('保存', self.save), ('開く', self.load)]:
-            self.add_button(plan, label, action)
+        plan.addStretch()
         layout.addLayout(plan)
         body = QHBoxLayout()
         layout.addLayout(body, 1)
-        edit = QGroupBox('対象とフレーミング')
-        edit.setFixedWidth(220)
-        editor_layout = QVBoxLayout(edit)
-        form = QFormLayout()
-        editor_layout.addLayout(form)
-        editor_layout.addStretch()
-        for label, key in [('天体名', 'name'), ("赤経", 'ra'),
-                           ("赤緯", 'dec'), ('撮影時間', 'duration')]:
-            form.addRow(label, self.v[key])
-        form.addRow(self.lp)
-        framing_columns = QHBoxLayout()
-        rotation_column = QVBoxLayout()
-        rotation_column.addWidget(QLabel('回転角 (°)'))
-        rotation_column.addWidget(self.v['angle'])
-        self.angle_slider = QSlider(Qt.Orientation.Horizontal)
-        self.angle_slider.setRange(-180, 180)
-        self.angle_slider.setSingleStep(1)
-        rotation_column.addWidget(self.angle_slider)
-        scale_column = QVBoxLayout()
-        scale_column.addWidget(QLabel('辺の倍率 (1〜2)'))
-        scale_column.addWidget(self.v['scale'])
-        scale_column.setAlignment(Qt.AlignmentFlag.AlignTop)
-        framing_columns.addLayout(rotation_column, 1)
-        framing_columns.addLayout(scale_column, 1)
-        form.addRow(framing_columns)
-        frame_controls = QHBoxLayout()
-        frame_controls.addWidget(QLabel('枠の濃さ'))
-        self.intensity_slider = QSlider(Qt.Orientation.Horizontal)
-        self.intensity_slider.setRange(50, 100)
-        self.intensity_slider.setValue(100)
-        frame_controls.addWidget(self.intensity_slider)
-        frame_controls.addWidget(QLabel('枠の太さ'))
-        self.thickness_slider = QSlider(Qt.Orientation.Horizontal)
-        self.thickness_slider.setRange(1, 10)
-        self.thickness_slider.setValue(10)
-        frame_controls.addWidget(self.thickness_slider)
-        form.addRow(frame_controls)
-        actions = QVBoxLayout()
-        self.add_button(actions, '追加 / 選択行を更新', self.commit)
-        self.add_button(actions, '新規対象', self.reset)
-        form.addRow(actions)
+        self.frame_dialog = FrameDialog(self)
+        self.intensity_slider = self.frame_dialog.intensity_slider
+        self.thickness_slider = self.frame_dialog.thickness_slider
         for control in (self.v['url'], self.v['fov_width'], self.v['fov_height'], self.framing):
             control.setParent(outer)
             control.hide()
-        body.addWidget(edit)
         right = QVBoxLayout()
         body.addLayout(right, 1)
         self.tree = TargetList()
         right.addWidget(self.tree, 1)
         list_actions = QHBoxLayout()
         list_actions.addStretch()
-        self.add_button(list_actions, 'プランJSONを保存', self.save)
         list_actions.addWidget(self.show_all)
         self.add_button(list_actions, '選択対象を削除', self.remove)
         right.addLayout(list_actions)
         note = QLabel('共有後、QRコードをSeestarアプリで読み込みます。\n'
                       '撮影開始時刻・日付はアプリ側でも確認してください。\n'
-                      'このプログラムから本体への撮影開始操作は行いません。')
+                      'Seestarメニューから本体への接続・プラン転送ができます。')
         note.setWordWrap(True)
         right.addWidget(note)
         layout.addWidget(self.status)
+        self.connection_status = QLabel('Seestar：未接続')
+        self.statusBar().addPermanentWidget(self.connection_status)
+        file_menu = self.menuBar().addMenu('ファイル')
+        file_menu.addAction('保存', self.save).setShortcut('Ctrl+S')
+        file_menu.addAction('開く', self.load).setShortcut('Ctrl+O')
+        seestar_menu = self.menuBar().addMenu('Seestar')
+        self.connect_action = seestar_menu.addAction('接続', self.connect_seestar)
+        self.share_action = seestar_menu.addAction('共有QR', self.share)
+        self.transfer_action = seestar_menu.addAction('プラン転送', self.transfer_plan)
+        self.transfer_action.setEnabled(False)
+        frame_menu = self.menuBar().addMenu('撮影枠')
+        frame_menu.addAction('枠の濃さ・太さを調整', self.frame_dialog.edit)
         self.tree.itemSelectionChanged.connect(self.select)
         self.tree.reordered.connect(self.reorder_targets)
+        self.tree.itemDoubleClicked.connect(self.edit_target)
         self.angle_slider.valueChanged.connect(self.rotation_slid)
         self.v['angle'].textChanged.connect(self.sync_angle_slider)
         self.intensity_slider.valueChanged.connect(lambda value: self.v['intensity'].setText(str(value)))
@@ -293,11 +296,30 @@ class App(QMainWindow):
             self.v[key].textChanged.connect(self.mark_form_dirty)
         self.lp.toggled.connect(self.mark_form_dirty)
         self.framing.toggled.connect(self.mark_form_dirty)
+        self.model_combo.currentTextChanged.connect(self.model_changed)
+        self.model_changed(self.model_combo.currentText())
         self.poll_timer.start(100)
         self.startup_timer = QTimer(self)
         self.startup_timer.setSingleShot(True)
         self.startup_timer.timeout.connect(self.clear_startup_frames)
         self.startup_timer.start(0)
+
+    def model_changed(self, model):
+        width, height = MODEL_FOV[model]
+        # Update both dimensions together before scheduling the new frame.
+        with QSignalBlocker(self.v['fov_width']), QSignalBlocker(self.v['fov_height']):
+            self.v['fov_width'].setText(str(width))
+            self.v['fov_height'].setText(str(height))
+        self.model_combo.setToolTip(f'望遠画角：横 {width:.2f}° × 縦 {height:.2f}°')
+        self.fov_label.setText(f'画角：横 {width:.2f}° × 縦 {height:.2f}°')
+        self.schedule_stellarium_frame()
+
+    def select_connected_model(self, model):
+        key = ''.join(str(model).casefold().split()).removeprefix('seestar')
+        for choice in MODEL_FOV:
+            if key == ''.join(choice.casefold().split()):
+                self.model_combo.setCurrentText(choice)
+                return
 
     def clear_startup_frames(self):
         url = self.v['url'].text()
@@ -431,7 +453,7 @@ class App(QMainWindow):
 
     def guard_form(self):
         if self.form_dirty:
-            raise ValueError('編集内容を「追加 / 選択行を更新」で反映してください。破棄する場合は「新規対象」を押してください。')
+            raise ValueError('対象設定ダイアログの「反映」または「キャンセル」で編集を終了してください。')
 
     def draw(self, *_):
         self.schedule_stellarium_frame()
@@ -491,6 +513,7 @@ class App(QMainWindow):
         if self.busy:
             return
         self.busy = True
+        self.update_seestar_actions()
         self.status.setText('通信中…')
         def work():
             try:
@@ -503,6 +526,7 @@ class App(QMainWindow):
         try:
             done, result, error = self.jobs.get_nowait()
             self.busy = False
+            self.update_seestar_actions()
             if error:
                 self.error(error)
             else:
@@ -520,16 +544,39 @@ class App(QMainWindow):
     def fetch(self):
         url = self.v['url'].text()
         def done(obj):
+            self.reset()
             self.stellarium_selection_start = None
             for key, value in zip(('name', 'ra', 'dec'), obj):
                 if key == 'name':
                     self.v[key].setText(str(value))
                 else:
                     self.set_number(key, value)
-            self.status.setText('選択天体を取得しました。時刻・構図を設定してリストへ追加してください。')
+            self.status.setText('撮影対象を設定してください。')
             self.stellarium_frame_enabled = True
             self.schedule_stellarium_frame()
+            self.open_target_dialog()
         self.run_job(lambda: selected_object(url), done)
+
+    def edit_target(self, item, _column=0):
+        self.tree.setCurrentItem(item)
+        self.select()
+        self.open_target_dialog()
+
+    def open_target_dialog(self):
+        # Restore the selected target and preview if the dialog is cancelled.
+        values = {key: self.v[key].text() for key in self.target_dialog.v}
+        numeric_values = self.numeric_values.copy()
+        lp, framing = self.lp.isChecked(), self.framing.isChecked()
+        self.target_dialog.setWindowTitle(
+            '撮影対象を追加' if self.editing is None else '撮影対象を編集')
+        if self.target_dialog.exec() != QDialog.DialogCode.Accepted:
+            for key, value in values.items():
+                self.v[key].setText(value)
+            self.numeric_values = numeric_values
+            self.lp.setChecked(lp)
+            self.framing.setChecked(framing)
+            self.form_dirty = False
+            self.schedule_stellarium_frame()
 
     def commit(self):
         try:
@@ -559,6 +606,7 @@ class App(QMainWindow):
             self.reset()
             self.committed_frame = copy.deepcopy(t)
             self.status.setText('撮影リストを更新しました。')
+            self.target_dialog.accept()
         except (ValueError, KeyError, TypeError) as exc:
             self.error(exc)
 
@@ -682,6 +730,114 @@ class App(QMainWindow):
             from seestarpy import plan
             return plan.share_plan(p, timeout=25)['share_link']
         self.run_job(work, self.show_qr)
+
+    def update_seestar_actions(self):
+        self.connect_action.setEnabled(not self.busy)
+        self.share_action.setEnabled(not self.busy)
+        self.transfer_action.setEnabled(not self.busy and self.seestar is not None)
+
+    def connect_seestar(self):
+        if self.busy:
+            return
+        def work():
+            try:
+                return SeestarClient.discover(), None
+            except Exception as exc:
+                return [], str(exc)
+
+        def done(result):
+            addresses, error = result
+            self.status.setText('自動検出できませんでした。IPアドレスを直接入力できます。' if error
+                                else '接続するSeestarのIPアドレスを選択してください。')
+            self.choose_seestar(addresses)
+
+        self.run_job(work, done)
+
+    def choose_seestar(self, addresses):
+        choices = list(addresses)
+        if self.seestar_host not in choices:
+            choices.append(self.seestar_host)
+        current = choices.index(self.seestar_host) if self.seestar is not None else 0
+        host, accepted = QInputDialog.getItem(
+            self, 'Seestarに接続',
+            '検出したIPアドレスを選択、または直接入力してください',
+            choices, current, True)
+        if not accepted:
+            return
+        try:
+            client = SeestarClient(host)
+        except ValueError:
+            self.error('有効なIPv4アドレスを入力してください。例：10.0.0.1')
+            return
+        self.seestar = None
+        self.seestar_host = client.host
+        self.connection_status.setText(f'Seestar：{client.host} に接続中')
+
+        def work():
+            try:
+                return client.connect(), None
+            except Exception as exc:
+                return None, str(exc)
+
+        def done(result):
+            state, error = result
+            if error:
+                self.connection_status.setText('Seestar：未接続')
+                self.update_seestar_actions()
+                self.error(f'Seestarへの接続に失敗しました：{error}')
+                return
+            self.seestar = client
+            device = state.get('device') or {}
+            model = (device.get('product_model') or device.get('model')
+                     or state.get('product_model') or state.get('model'))
+            if model:
+                self.select_connected_model(model)
+            self.connection_status.setText(f'Seestar：{client.host} 接続確認済み')
+            self.update_seestar_actions()
+            self.status.setText(f'Seestarに接続しました：{client.host}')
+
+        self.run_job(work, done)
+
+    def transfer_plan(self):
+        if self.busy:
+            return
+        client = self.seestar
+        if client is None:
+            self.error('Seestarメニューの「接続」で本体に接続してください。')
+            return
+        try:
+            self.guard_form()
+            payload = build_plan(self.v['plan'].text(), self.targets, self.v['start'].text())
+        except Exception as exc:
+            self.error(exc)
+            return
+        if not self.confirm(
+                'プランを転送・実行',
+                f"接続先：{client.host}\nプラン：{payload['plan_name']}\n"
+                f"対象数：{len(payload['list'])}\n開始時刻：{clock(payload['list'][0]['start_min'])}\n\n"
+                '転送すると、本体でこのプランの実行が開始されます。\n'
+                '開始時刻が過去の場合は、すぐに撮影が始まる可能性があります。\n'
+                '現在の本体の状態と撮影範囲を確認して、転送しますか？'):
+            return
+
+        def work():
+            try:
+                client.transfer(payload)
+                return None
+            except Exception as exc:
+                return str(exc)
+
+        def done(error):
+            if error:
+                self.seestar = None
+                self.connection_status.setText('Seestar：接続を再確認してください')
+                self.update_seestar_actions()
+                self.error(f'プラン転送の完了を確認できませんでした：{error}\n'
+                           '本体側の状態を確認してから再接続してください。')
+                return
+            self.status.setText(f"Seestarへプラン「{payload['plan_name']}」を転送し、実行を開始しました。")
+
+        self.run_job(work, done)
 
     def show_qr(self, link):
         import qrcode
