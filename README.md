@@ -38,6 +38,7 @@ python -m venv .build-venv
 dist/
 └── SeestarPlanEditor/
     ├── SeestarPlanEditor.exe
+    ├── README.TXT
     ├── licenses/
     │   ├── LGPL-3.0.txt
     │   └── GPL-3.0.txt

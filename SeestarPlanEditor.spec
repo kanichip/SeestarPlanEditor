@@ -41,8 +41,10 @@ coll = COLLECT(
     name='SeestarPlanEditor',
 )
 
-# Place the license texts only beside the executable for distribution.
-license_dir = Path(coll.name) / 'licenses'
+# Place the user guide and license texts beside the executable.
+distribution_dir = Path(coll.name)
+copy2(root / 'README.TXT', distribution_dir / 'README.TXT')
+license_dir = distribution_dir / 'licenses'
 license_dir.mkdir(parents=True, exist_ok=True)
 for name in ('LGPL-3.0.txt', 'GPL-3.0.txt'):
     copy2(root / 'licenses' / name, license_dir / name)
