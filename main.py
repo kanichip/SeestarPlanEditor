@@ -571,7 +571,9 @@ class App(QMainWindow):
             self.status.setText('撮影対象を設定してください。')
             self.stellarium_frame_enabled = True
             self.schedule_stellarium_frame()
-            self.open_target_dialog()
+            # Return from the polling timer before entering the modal event loop.
+            # The timer must keep collecting frame updates while the dialog is open.
+            QTimer.singleShot(0, self, self.open_target_dialog)
         self.run_job(lambda: selected_object(url), done)
 
     def edit_target(self, item, _column=0):
@@ -584,15 +586,19 @@ class App(QMainWindow):
         values = {key: self.v[key].text() for key in self.target_dialog.v}
         numeric_values = self.numeric_values.copy()
         lp, framing = self.lp.isChecked(), self.framing.isChecked()
+        adding = self.editing is None
         self.target_dialog.setWindowTitle(
-            '撮影対象を追加' if self.editing is None else '撮影対象を編集')
+            '撮影対象を追加' if adding else '撮影対象を編集')
         if self.target_dialog.exec() != QDialog.DialogCode.Accepted:
-            for key, value in values.items():
-                self.v[key].setText(value)
-            self.numeric_values = numeric_values
-            self.lp.setChecked(lp)
-            self.framing.setChecked(framing)
-            self.form_dirty = False
+            if adding:
+                self.reset()
+            else:
+                for key, value in values.items():
+                    self.v[key].setText(value)
+                self.numeric_values = numeric_values
+                self.lp.setChecked(lp)
+                self.framing.setChecked(framing)
+                self.form_dirty = False
             self.schedule_stellarium_frame()
 
     def commit(self):
@@ -682,6 +688,9 @@ class App(QMainWindow):
         self.tree.clearSelection()
         for k in ('name', 'ra', 'dec'):
             self.v[k].setText('')
+        self.set_number('angle', 0)
+        self.v['scale'].setText('1.0')
+        self.framing.setChecked(False)
         self.frame_deselected = False
         self.form_dirty = False
 
