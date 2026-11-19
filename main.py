@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from target_dialog import TargetDialog
+from target_dialog import ROTATION_RANGE, TargetDialog
 from frame_dialog import FrameDialog
 from seestar_client import SeestarClient
 
@@ -368,7 +368,7 @@ class App(QMainWindow):
 
     def sync_angle_slider(self):
         try:
-            value = round(number(self.v['angle'].text(), -180, 180, '回転角'))
+            value = round(number(self.v['angle'].text(), *ROTATION_RANGE, '回転角'))
         except ValueError:
             return
         blocker = QSignalBlocker(self.angle_slider)
@@ -407,7 +407,7 @@ class App(QMainWindow):
 
     def format_number(self, key):
         try:
-            low, high = (0, 24) if key == 'ra' else (-90, 90) if key == 'dec' else (-180, 180)
+            low, high = {'ra': (0, 24), 'dec': (-90, 90), 'angle': ROTATION_RANGE}[key]
             self.set_number(key, self.input_number(key, low, high, key))
         except ValueError:
             pass
@@ -486,7 +486,7 @@ class App(QMainWindow):
             return
         try:
             has_position = bool(self.v['ra'].text().strip() and self.v['dec'].text().strip())
-            angle = self.input_number('angle', -180, 180, '回転角') if self.framing.isChecked() else 0
+            angle = self.input_number('angle', *ROTATION_RANGE, '回転角') if self.framing.isChecked() else 0
             scale = number(self.v['scale'].text(), 1, 2, '辺の倍率') ** 2 if self.framing.isChecked() else 1
             args = (self.v['url'].text(), self.input_number('ra', 0, 24, '赤経') if has_position else None,
                     self.input_number('dec', -90, 90, '赤緯') if has_position else None, angle, scale,
@@ -613,7 +613,7 @@ class App(QMainWindow):
             if self.framing.isChecked():
                 mosaic = copy.deepcopy(t.get('mosaic') or {})
                 mosaic.update(scale=number(self.v['scale'].text(), 1, 2, '辺の倍率') ** 2,
-                              angle=self.input_number('angle', -180, 180, '回転角'))
+                              angle=self.input_number('angle', *ROTATION_RANGE, '回転角'))
                 mosaic['star_map_angle'] = mosaic['angle']
                 t['mosaic'] = mosaic
             else:

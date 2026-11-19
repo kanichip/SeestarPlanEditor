@@ -6,6 +6,9 @@ from PySide6.QtWidgets import (
 )
 
 
+ROTATION_RANGE = (-90, 90)
+
+
 class TargetDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,7 +28,7 @@ class TargetDialog(QDialog):
         form.addRow(self.lp)
         form.addRow('回転角（°）', self.v['angle'])
         self.angle_slider = QSlider(Qt.Orientation.Horizontal)
-        self.angle_slider.setRange(-180, 180)
+        self.angle_slider.setRange(*ROTATION_RANGE)
         form.addRow(self.angle_slider)
         form.addRow('辺の倍率（1〜2）', self.v['scale'])
         self.buttons = QDialogButtonBox(
