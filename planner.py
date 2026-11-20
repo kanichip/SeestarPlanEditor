@@ -7,7 +7,7 @@ import math
 import os
 import re
 from io import BytesIO
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -196,6 +196,36 @@ def frame_points(angle, scale=1, width=240, height=135):
                          (width/2, height/2), (-width/2, height/2)]]
 
 
+def sky_offset(ra, dec, x, y):
+    """Project east/north tangent-plane offsets onto the celestial sphere."""
+    norm = math.sqrt(1 + x*x + y*y)
+    lon = ra + math.atan2(x, math.cos(dec) - y * math.sin(dec))
+    lat = math.asin(max(-1, min(1, (math.sin(dec) + y*math.cos(dec)) / norm)))
+    return math.degrees(lon) % 360, math.degrees(lat)
+
+
+def mosaic_panel_centers(ra, dec, angle, scale, width, height, rows, columns):
+    """Yield J2000 panel centers in shooting order (RA in hours)."""
+    origin_ra, origin_dec = math.radians(ra * 15), math.radians(dec)
+    rotation = math.radians(angle)
+    cos_angle, sin_angle = math.cos(rotation), math.sin(rotation)
+    # Use the same 20% overlap as the Mosaic Planner default.
+    step_x = 0.8 * 2 * math.tan(math.radians(width) / 2) * math.sqrt(scale)
+    step_y = 0.8 * 2 * math.tan(math.radians(height) / 2) * math.sqrt(scale)
+    for column in range(columns):
+        x = (column - (columns - 1) / 2) * step_x
+        for row in range(rows):
+            y = (row - (rows - 1) / 2) * step_y
+            lon, lat = sky_offset(origin_ra, origin_dec,
+                                  x*cos_angle - y*sin_angle, x*sin_angle + y*cos_angle)
+            yield min(lon / 15, 24 - 1e-10), lat
+
+
+def mosaic_panel_number(target):
+    match = re.search(r' (?:P|パネル)([1-9][0-9]{0,2})$', target.get('target_name', ''))
+    return int(match[1]) if match else None
+
+
 def sky_frame_corners(ra, dec, angle, scale=1, width=2.25, height=4.0):
     """Inverse gnomonic projection; RA in hours, sizes in degrees, scale is area.
 
@@ -208,13 +238,7 @@ def sky_frame_corners(ra, dec, angle, scale=1, width=2.25, height=4.0):
     scale = math.sqrt(number(scale, 1, 4, '面積倍率'))
     w = 2 * math.tan(math.radians(number(width, 0.01, 30, '横画角')) / 2) * scale
     h = 2 * math.tan(math.radians(number(height, 0.01, 30, '縦画角')) / 2) * scale
-    corners = []
-    for x, y in frame_points(angle, width=w, height=h):
-        # Positive x is east; positive y is north.
-        norm = math.sqrt(1 + x*x + y*y)
-        lon = ra + math.atan2(x, math.cos(dec) - y * math.sin(dec))
-        lat = math.asin(max(-1, min(1, (math.sin(dec) + y*math.cos(dec)) / norm)))
-        corners.append((math.degrees(lon) % 360, math.degrees(lat)))
+    corners = [sky_offset(ra, dec, x, y) for x, y in frame_points(angle, width=w, height=h)]
     # Viewed from inside the celestial sphere, east is left on the sky.
     # Stellarium needs this winding to render the front of the image.
     return [corners[i] for i in (1, 0, 3, 2)]
@@ -240,7 +264,8 @@ for (var i = 0; i < ids.length; ++i) {
 
 def draw_stellarium_frame(base_url, ra, dec, angle, scale=1, width=2.25, height=4.0,
                           *, start_min=None, plan_date=None, intensity=50,
-                          frames=None, previous_count=0, selected_index=None, thickness=3):
+                          frames=None, previous_count=0, selected_index=None, thickness=3,
+                          panel_number=None):
     """Replace this application's sky image via Stellarium Remote Control."""
     parsed = urlsplit(base_url)
     if parsed.scheme != 'http' or not parsed.hostname:
@@ -256,7 +281,7 @@ def draw_stellarium_frame(base_url, ra, dec, angle, scale=1, width=2.25, height=
     texture_height = max(2, round(1024 * min(1, 1 / aspect)))
     # loadSkyImage always prefixes "scripts/", even for absolute Windows paths.
     # Install only our texture into Stellarium's standard user script directory.
-    texture = f'seestar_planner_frame_{thickness}_{texture_width}x{texture_height}.png'
+    texture = f'seestar_planner_frame_{thickness}_{texture_width}x{texture_height}'
     scripts = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')) / 'Stellarium' / 'scripts'
     scripts.mkdir(parents=True, exist_ok=True)
     # Keep the outer field of view fixed as the stroke grows inward.
@@ -267,33 +292,49 @@ def draw_stellarium_frame(base_url, ra, dec, angle, scale=1, width=2.25, height=
         image = Image.new('RGBA', (texture_width, texture_height), background)
     ImageDraw.Draw(image).rectangle((0, 0, image.width - 1, image.height - 1),
                                    outline=color, width=thickness)
-    buffer = BytesIO()
-    image.save(buffer, format='PNG')
-    source = buffer.getvalue()
-    destination = scripts / texture
-    if not destination.exists() or destination.read_bytes() != source:
-        destination.write_bytes(source)
+    textures = {}
+
+    def frame_texture(label):
+        if label not in textures:
+            filename = f'{texture}.png'
+            rendered = image
+            if label is not None:
+                filename = f'{texture}_panel_{label}.png'
+                rendered = image.copy()
+                font = ImageFont.load_default(size=max(1, round(min(image.size) * 0.14)))
+                ImageDraw.Draw(rendered).text((image.width / 2, image.height / 2), str(label),
+                                              fill=color, font=font, anchor='mm')
+            buffer = BytesIO()
+            rendered.save(buffer, format='PNG')
+            source = buffer.getvalue()
+            destination = scripts / filename
+            if not destination.exists() or destination.read_bytes() != source:
+                destination.write_bytes(source)
+            textures[label] = filename
+        return textures[label]
+
     commands = ['core.removeSkyImage("seestar_planner_frame");']
     commands.extend(f'core.removeSkyImage("seestar_planner_all_{i}");'
                     for i in range(previous_count))
-    def add_frame(ident, frame_ra, frame_dec, frame_angle, frame_scale):
+    def add_frame(ident, frame_ra, frame_dec, frame_angle, frame_scale, label=None):
         corners = sky_frame_corners(frame_ra, frame_dec, frame_angle, frame_scale, width, height)
         coordinates = ', '.join(str(v) for point in corners for v in point)
         if intensity > 0:
             brightness = 20 - intensity * 0.12
-            commands.append(f'core.loadSkyImage({json.dumps(ident)}, {json.dumps(texture)}, '
+            commands.append(f'core.loadSkyImage({json.dumps(ident)}, {json.dumps(frame_texture(label))}, '
                             f'{coordinates}, 2.5, {brightness}, true, "EqJ2000");')
     if frames is not None:
         for i, target in enumerate(frames):
+            label = target.get('panel_number') or mosaic_panel_number(target)
             if i == selected_index and ra is not None:
-                add_frame(f'seestar_planner_all_{i}', ra, dec, angle, scale)
+                add_frame(f'seestar_planner_all_{i}', ra, dec, angle, scale, label)
             else:
                 mosaic = target.get('mosaic') or {}
                 add_frame(f'seestar_planner_all_{i}', *target['target_ra_dec'],
                           mosaic.get('angle', 0),
-                          mosaic.get('scale', 1))
+                          mosaic.get('scale', 1), label)
     if ra is not None and (frames is None or selected_index is None):
-        add_frame('seestar_planner_frame', ra, dec, angle, scale)
+        add_frame('seestar_planner_frame', ra, dec, angle, scale, panel_number)
     script = '\n'.join(commands)
     if start_min is not None:
         if not isinstance(start_min, int) or not 0 <= start_min < 2880:

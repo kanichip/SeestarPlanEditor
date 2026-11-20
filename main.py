@@ -12,7 +12,7 @@ import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QItemSelectionModel, QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog,
@@ -26,7 +26,7 @@ from frame_dialog import FrameDialog
 from seestar_client import SeestarClient
 
 from planner import (build_plan, calculate_altitude, clear_stellarium_frames, clock, coordinate_text,
-                     draw_stellarium_frame, number, parse_coordinate,
+                     draw_stellarium_frame, mosaic_panel_centers, mosaic_panel_number, number, parse_coordinate,
                      schedule_targets, selected_object)
 
 
@@ -123,7 +123,7 @@ def render_target_card(target: dict, plan_date: date, width: int = 75, height: i
 
 
 class TargetList(QTreeWidget):
-    reordered = Signal()
+    reordered = Signal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -131,7 +131,7 @@ class TargetList(QTreeWidget):
         self.header().moveSection(5, 0)
         self.setIconSize(QSize(75, 50))
         self.setRootIsDecorated(False)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.header().setStretchLastSection(False)
@@ -142,11 +142,15 @@ class TargetList(QTreeWidget):
         self.setColumnWidth(5, 25)
 
     def dropEvent(self, event):
+        selected = self.selected_target_indices()
         blocker = QSignalBlocker(self)
         super().dropEvent(event)
         del blocker
         if event.isAccepted():
-            self.reordered.emit()
+            self.reordered.emit(selected)
+
+    def selected_target_indices(self):
+        return [item.data(0, Qt.ItemDataRole.UserRole) for item in self.selectedItems()]
 
     def mousePressEvent(self, event):
         if (event.button() == Qt.MouseButton.LeftButton
@@ -174,7 +178,7 @@ class App(QMainWindow):
         self.stellarium_selection_start = None
         self.stellarium_plan_dates = {}
         self.stellarium_frame_count = 0
-        self.committed_frame = None
+        self.committed_frames = []
         self.frame_deselected = False
         self.numeric_values = {}
         self.v = {key: QLineEdit(value) for key, value in {
@@ -189,6 +193,7 @@ class App(QMainWindow):
         self.v.update(self.target_dialog.v)
         self.lp = self.target_dialog.lp
         self.angle_slider = self.target_dialog.angle_slider
+        self.scale_slider = self.target_dialog.scale_slider
         self.target_dialog.buttons.accepted.connect(self.commit)
         self.framing = QCheckBox('回転フレーミングを有効化（実機未検証）')
         self.show_all = QPushButton('全表示')
@@ -290,6 +295,8 @@ class App(QMainWindow):
         self.tree.itemDoubleClicked.connect(self.edit_target)
         self.angle_slider.valueChanged.connect(self.rotation_slid)
         self.v['angle'].textChanged.connect(self.sync_angle_slider)
+        self.scale_slider.valueChanged.connect(lambda value: self.v['scale'].setText(f'{value / 10:.1f}'))
+        self.v['scale'].textChanged.connect(self.sync_scale_slider)
         self.intensity_slider.valueChanged.connect(lambda value: self.v['intensity'].setText(str(value)))
         self.v['intensity'].textChanged.connect(self.sync_intensity_slider)
         self.thickness_slider.valueChanged.connect(self.schedule_stellarium_frame)
@@ -299,6 +306,9 @@ class App(QMainWindow):
             self.v[key].textEdited.connect(lambda _, k=key: self.numeric_values.pop(k, None))
         for key in ('angle', 'scale'):
             self.v[key].textChanged.connect(self.framing_changed)
+        self.target_dialog.extended_mosaic.toggled.connect(self.extended_mosaic_changed)
+        for field in (self.target_dialog.panel_rows, self.target_dialog.panel_columns):
+            field.valueChanged.connect(self.schedule_stellarium_frame)
         self.framing.toggled.connect(self.draw)
         self.show_all.toggled.connect(self.toggle_all_frames)
         for key in ('ra', 'dec', 'fov_width', 'fov_height', 'url', 'intensity'):
@@ -376,6 +386,14 @@ class App(QMainWindow):
         blocker = QSignalBlocker(self.angle_slider)
         self.angle_slider.setValue(value)
 
+    def sync_scale_slider(self):
+        try:
+            value = round(number(self.v['scale'].text(), 1, 2, '辺の倍率') * 10)
+        except ValueError:
+            return
+        with QSignalBlocker(self.scale_slider):
+            self.scale_slider.setValue(value)
+
     def sync_intensity_slider(self):
         try:
             value = round(number(self.v['intensity'].text(), 50, 100, '枠の濃さ'))
@@ -418,7 +436,9 @@ class App(QMainWindow):
         self.stellarium_frame_enabled = True
         self.schedule_stellarium_frame()
 
-    def reorder_targets(self):
+    def reorder_targets(self, selected=None):
+        if selected is None:
+            selected = self.tree.selected_target_indices()
         order = [self.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)
                  for i in range(self.tree.topLevelItemCount())]
         try:
@@ -431,9 +451,15 @@ class App(QMainWindow):
         self.targets = targets
         self.editing = editing
         self.refresh()
+        selected = set(selected)
+        with QSignalBlocker(self.tree):
+            for position, index in enumerate(order):
+                if index in selected:
+                    self.tree.topLevelItem(position).setSelected(True)
+            if editing is not None:
+                self.tree.setCurrentItem(self.tree.topLevelItem(editing), 0,
+                                         QItemSelectionModel.SelectionFlag.NoUpdate)
         if editing is not None:
-            blocker = QSignalBlocker(self.tree)
-            self.tree.setCurrentItem(self.tree.topLevelItem(editing))
             self.stellarium_selection_start = targets[editing]['start_min']
         self.dirty = True
         self.schedule_stellarium_frame()
@@ -466,6 +492,15 @@ class App(QMainWindow):
         else:
             self.draw()
 
+    def extended_mosaic_changed(self, enabled):
+        if enabled:
+            self.set_number('angle', 0)
+            self.v['scale'].setText('1.0')
+            self.framing.setChecked(False)
+        for control in (self.v['angle'], self.angle_slider, self.v['scale'], self.scale_slider):
+            control.setEnabled(not enabled)
+        self.schedule_stellarium_frame()
+
     def mark_form_dirty(self, *_):
         self.frame_deselected = False
         self.form_dirty = True
@@ -486,6 +521,9 @@ class App(QMainWindow):
         if self.busy:
             self.frame_timer.start(100)
             return
+        panel_number = None
+        if self.editing is not None:
+            panel_number = mosaic_panel_number(self.targets[self.editing])
         try:
             has_position = bool(self.v['ra'].text().strip() and self.v['dec'].text().strip())
             angle = self.input_number('angle', *ROTATION_RANGE, '回転角') if self.framing.isChecked() else 0
@@ -494,8 +532,9 @@ class App(QMainWindow):
                     self.input_number('dec', -90, 90, '赤緯') if has_position else None, angle, scale,
                     number(self.v['fov_width'].text(), 0.01, 30, '横画角'),
                     number(self.v['fov_height'].text(), 0.01, 30, '縦画角'))
-            if not has_position and self.committed_frame is not None and not self.show_all.isChecked():
-                target = self.committed_frame
+            if not has_position and len(self.committed_frames) == 1 and not self.show_all.isChecked():
+                target = self.committed_frames[0]
+                panel_number = mosaic_panel_number(target)
                 mosaic = target.get('mosaic') or {}
                 args = (args[0], *target['target_ra_dec'], mosaic.get('angle', 0),
                         mosaic.get('scale', 1), *args[5:])
@@ -509,8 +548,20 @@ class App(QMainWindow):
         options = {} if start is None else dict(
             start_min=start, plan_date=self.stellarium_plan_dates.get(args[0]))
         frames = copy.deepcopy(self.targets) if self.show_all.isChecked() else None
+        if args[1] is not None and self.editing is None and self.target_dialog.extended_mosaic.isChecked():
+            _, ra, dec, angle, scale, width, height = args
+            frames = (frames or []) + [
+                dict(target_ra_dec=(panel_ra, panel_dec), mosaic=dict(angle=angle, scale=scale),
+                     panel_number=panel)
+                for panel, (panel_ra, panel_dec) in enumerate(
+                    self.panel_centers(ra, dec, angle, scale, width, height), start=1)
+            ]
+            args = (args[0], None, None, *args[3:])
+        elif not has_position and not self.frame_deselected and frames is None and len(self.committed_frames) > 1:
+            frames = self.committed_frames
         options.update(intensity=intensity, thickness=self.thickness_slider.value(), frames=frames,
-                       previous_count=self.stellarium_frame_count, selected_index=self.editing)
+                       previous_count=self.stellarium_frame_count, selected_index=self.editing,
+                       panel_number=panel_number)
         def work():
             try:
                 plan_date = draw_stellarium_frame(*args, **options)
@@ -579,9 +630,10 @@ class App(QMainWindow):
         self.run_job(lambda: selected_object(url), done)
 
     def edit_target(self, item, _column=0):
-        self.tree.setCurrentItem(item)
+        self.tree.setCurrentItem(item, 0, QItemSelectionModel.SelectionFlag.ClearAndSelect)
         self.select()
-        self.open_target_dialog()
+        if self.editing == item.data(0, Qt.ItemDataRole.UserRole):
+            self.open_target_dialog()
 
     def open_target_dialog(self):
         # Restore the selected target and preview if the dialog is cancelled.
@@ -589,6 +641,7 @@ class App(QMainWindow):
         numeric_values = self.numeric_values.copy()
         lp, framing = self.lp.isChecked(), self.framing.isChecked()
         adding = self.editing is None
+        self.target_dialog.extended_mosaic.setVisible(adding)
         self.target_dialog.setWindowTitle(
             '撮影対象を追加' if adding else '撮影対象を編集')
         if self.target_dialog.exec() != QDialog.DialogCode.Accepted:
@@ -602,6 +655,11 @@ class App(QMainWindow):
                 self.framing.setChecked(framing)
                 self.form_dirty = False
             self.schedule_stellarium_frame()
+
+    def panel_centers(self, ra, dec, angle, scale, width, height):
+        return mosaic_panel_centers(ra, dec, angle, scale, width, height,
+                                    self.target_dialog.panel_rows.value(),
+                                    self.target_dialog.panel_columns.value())
 
     def commit(self):
         try:
@@ -621,15 +679,33 @@ class App(QMainWindow):
             else:
                 t.pop('mosaic', None)
             candidates = copy.deepcopy(self.targets)
+            committed = [t]
+            if self.editing is None and self.target_dialog.extended_mosaic.isChecked():
+                if not t['target_name']:
+                    raise ValueError('天体名を入力してください。')
+                mosaic = t.get('mosaic') or {}
+                width = number(self.v['fov_width'].text(), 0.01, 30, '横画角')
+                height = number(self.v['fov_height'].text(), 0.01, 30, '縦画角')
+                centers = self.panel_centers(*t['target_ra_dec'], mosaic.get('angle', 0),
+                                             mosaic.get('scale', 1), width, height)
+                used_ids = {target['target_id'] for target in candidates}
+                committed = []
+                for panel, (ra, dec) in enumerate(centers, start=1):
+                    target_id = secrets.randbelow(900000000) + 100000000
+                    while target_id in used_ids:
+                        target_id = secrets.randbelow(900000000) + 100000000
+                    used_ids.add(target_id)
+                    committed.append(dict(t, target_id=target_id, target_ra_dec=[ra, dec],
+                                          target_name=f"{t['target_name']} P{panel}"))
             if self.editing is None:
-                candidates.append(t)
+                candidates.extend(committed)
             else:
                 candidates[self.editing] = t
             self.targets = build_plan(self.v['plan'].text(), candidates, self.v['start'].text())['list']
             self.dirty = True
             self.refresh()
             self.reset()
-            self.committed_frame = copy.deepcopy(t)
+            self.committed_frames = copy.deepcopy(committed)
             self.status.setText('撮影リストを更新しました。')
             self.target_dialog.accept()
         except (ValueError, KeyError, TypeError) as exc:
@@ -659,12 +735,15 @@ class App(QMainWindow):
             self.frame_deselected = True
             self.stellarium_selection_start = None
             return
-        if self.editing == selection[0].data(0, Qt.ItemDataRole.UserRole):
+        current = self.tree.currentItem()
+        active = current if current in selection else selection[0]
+        index = active.data(0, Qt.ItemDataRole.UserRole)
+        if self.editing == index:
             return
         if self.form_dirty and not self.confirm('編集内容', '未反映の編集を破棄して対象を切り替えますか？'):
             self.tree.clearSelection()
             return
-        self.editing = selection[0].data(0, Qt.ItemDataRole.UserRole)
+        self.editing = index
         self.frame_deselected = False
         t = self.targets[self.editing]
         m = t.get('mosaic') or {}
@@ -684,7 +763,7 @@ class App(QMainWindow):
         self.form_dirty = False
 
     def reset(self):
-        self.committed_frame = None
+        self.committed_frames = []
         self.editing = None
         self.stellarium_selection_start = None
         self.tree.clearSelection()
@@ -693,13 +772,16 @@ class App(QMainWindow):
         self.set_number('angle', 0)
         self.v['scale'].setText('1.0')
         self.framing.setChecked(False)
+        self.target_dialog.extended_mosaic.setChecked(False)
+        self.target_dialog.panel_rows.setValue(1)
+        self.target_dialog.panel_columns.setValue(1)
         self.frame_deselected = False
         self.form_dirty = False
 
     def remove(self):
-        if self.editing is not None:
-            candidates = copy.deepcopy(self.targets)
-            del candidates[self.editing]
+        selected = set(self.tree.selected_target_indices())
+        if selected:
+            candidates = [target for index, target in enumerate(self.targets) if index not in selected]
             try:
                 self.targets = schedule_targets(candidates, self.v['start'].text())
             except ValueError as exc:
