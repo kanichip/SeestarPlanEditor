@@ -295,6 +295,8 @@ class App(QMainWindow):
         self.thickness_slider.valueChanged.connect(self.schedule_stellarium_frame)
         for key in ('ra', 'dec', 'angle'):
             self.v[key].editingFinished.connect(lambda k=key: self.format_number(k))
+        for key in ('ra', 'dec'):
+            self.v[key].textEdited.connect(lambda _, k=key: self.numeric_values.pop(k, None))
         for key in ('angle', 'scale'):
             self.v[key].textChanged.connect(self.framing_changed)
         self.framing.toggled.connect(self.draw)
