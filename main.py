@@ -25,7 +25,8 @@ from target_dialog import ROTATION_RANGE, TargetDialog
 from frame_dialog import FrameDialog
 from seestar_client import SeestarClient
 
-from planner import (build_plan, calculate_altitude, clear_stellarium_frames, clock, coordinate_text,
+from planner import (DEFAULT_PANEL_OVERLAP_PERCENT, build_plan, calculate_altitude, clear_stellarium_frames,
+                     clock, coordinate_text,
                      draw_stellarium_frame, mosaic_panel_centers, mosaic_panel_number, number, parse_coordinate,
                      schedule_targets, selected_object)
 
@@ -163,7 +164,7 @@ class TargetList(QTreeWidget):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Seestar Plan Editor')
+        self.setWindowTitle('Seestar Plan Editor v0.3')
         self.resize(350, 450)
         self.setMinimumSize(350, 400)
         self.targets = []
@@ -232,7 +233,6 @@ class App(QMainWindow):
         fetch_button.setStyleSheet('background-color: #d9edff; padding: 6px 12px;')
         top.addWidget(QLabel('カメラ：望遠固定'))
         top.addStretch()
-        layout.addLayout(top)
         plan = QHBoxLayout()
         plan.addWidget(QLabel('プラン名'))
         self.v['plan'].setMaximumWidth(100)
@@ -244,6 +244,7 @@ class App(QMainWindow):
         plan.addWidget(self.v['start'])
         plan.addStretch()
         layout.addLayout(plan)
+        layout.addLayout(top)
         body = QHBoxLayout()
         layout.addLayout(body, 1)
         self.frame_dialog = FrameDialog(self)
@@ -307,7 +308,8 @@ class App(QMainWindow):
         for key in ('angle', 'scale'):
             self.v[key].textChanged.connect(self.framing_changed)
         self.target_dialog.extended_mosaic.toggled.connect(self.extended_mosaic_changed)
-        for field in (self.target_dialog.panel_rows, self.target_dialog.panel_columns):
+        for field in (self.target_dialog.panel_rows, self.target_dialog.panel_columns,
+                      self.target_dialog.panel_overlap):
             field.valueChanged.connect(self.schedule_stellarium_frame)
         self.framing.toggled.connect(self.draw)
         self.show_all.toggled.connect(self.toggle_all_frames)
@@ -659,7 +661,8 @@ class App(QMainWindow):
     def panel_centers(self, ra, dec, angle, scale, width, height):
         return mosaic_panel_centers(ra, dec, angle, scale, width, height,
                                     self.target_dialog.panel_rows.value(),
-                                    self.target_dialog.panel_columns.value())
+                                    self.target_dialog.panel_columns.value(),
+                                    overlap_percent=self.target_dialog.panel_overlap.value())
 
     def commit(self):
         try:
@@ -775,6 +778,7 @@ class App(QMainWindow):
         self.target_dialog.extended_mosaic.setChecked(False)
         self.target_dialog.panel_rows.setValue(1)
         self.target_dialog.panel_columns.setValue(1)
+        self.target_dialog.panel_overlap.setValue(DEFAULT_PANEL_OVERLAP_PERCENT)
         self.frame_deselected = False
         self.form_dirty = False
 

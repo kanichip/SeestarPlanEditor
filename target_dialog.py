@@ -3,11 +3,11 @@ import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QLabel, QLineEdit, QSlider,
+    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QSlider,
     QSpinBox, QVBoxLayout,
 )
 
-from planner import coordinate_text, parse_coordinate
+from planner import DEFAULT_PANEL_OVERLAP_PERCENT, coordinate_text, parse_coordinate
 
 
 ROTATION_RANGE = (-90, 90)
@@ -112,7 +112,21 @@ class TargetDialog(QDialog):
         self.setTabOrder(self.v['duration'], self.lp)
         self.setTabOrder(self.lp, self.v['angle'])
         self.extended_mosaic = QCheckBox('拡張モザイク')
-        form.addRow(self.extended_mosaic)
+        self.panel_overlap = QSpinBox()
+        self.panel_overlap.setRange(0, 99)
+        self.panel_overlap.setSuffix('%')
+        self.panel_overlap.setValue(DEFAULT_PANEL_OVERLAP_PERCENT)
+        overlap_label = QLabel('重複率')
+        overlap_label.setBuddy(self.panel_overlap)
+        mosaic_row = QHBoxLayout()
+        mosaic_row.addWidget(self.extended_mosaic)
+        mosaic_row.addWidget(overlap_label)
+        mosaic_row.addWidget(self.panel_overlap)
+        mosaic_row.addStretch()
+        form.addRow(mosaic_row)
+        for control in (overlap_label, self.panel_overlap):
+            control.hide()
+            self.extended_mosaic.toggled.connect(control.setVisible)
         self.panel_rows = QSpinBox()
         self.panel_columns = QSpinBox()
         for label, field in [('南北方向のパネル数', self.panel_rows),

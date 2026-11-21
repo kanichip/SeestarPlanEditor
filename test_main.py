@@ -236,6 +236,8 @@ class FramingTests(unittest.TestCase):
 
     def test_extended_mosaic_preview_matches_added_panels(self):
         dialog = self.app.target_dialog
+        self.assertTrue(dialog.panel_overlap.isHidden())
+        self.assertEqual(dialog.panel_overlap.value(), 20)
         self.app.v['name'].setText('M1')
         self.app.v['angle'].setText('20')
         self.app.v['scale'].setText('1.5')
@@ -243,6 +245,7 @@ class FramingTests(unittest.TestCase):
         dialog.panel_rows.setValue(2)
         dialog.panel_columns.setValue(2)
         args = self.sent_frame(lambda: dialog.extended_mosaic.setChecked(True))
+        self.assertFalse(dialog.panel_overlap.isHidden())
         self.assertEqual(args[1:3], (None, None))
         self.assertEqual(self.app.v['angle'].text(), '0')
         self.assertEqual(self.app.angle_slider.value(), 0)
@@ -253,8 +256,12 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(len(self.sent_options['frames']), 4)
         self.sent_frame(lambda: dialog.panel_columns.setValue(3))
         self.assertEqual(self.sent_options['previous_count'], 4)
+        default_preview = self.sent_options['frames']
+        self.sent_frame(lambda: dialog.panel_overlap.setValue(40))
         preview = self.sent_options['frames']
         self.assertEqual(len(preview), 6)
+        self.assertLess(abs(preview[0]['target_ra_dec'][1] - preview[1]['target_ra_dec'][1]),
+                        abs(default_preview[0]['target_ra_dec'][1] - default_preview[1]['target_ra_dec'][1]))
         self.assertEqual([frame['panel_number'] for frame in preview], list(range(1, 7)))
         self.assertEqual(len({p['target_ra_dec'] for p in preview}), 6)
 
@@ -270,6 +277,8 @@ class FramingTests(unittest.TestCase):
             self.assertNotIn('mosaic', target)
             self.assertTrue(target['lp_filter'])
         self.assertFalse(dialog.extended_mosaic.isChecked())
+        self.assertTrue(dialog.panel_overlap.isHidden())
+        self.assertEqual(dialog.panel_overlap.value(), 20)
         self.assertTrue(all(control.isEnabled() for control in controls))
         self.assertEqual((dialog.panel_rows.value(), dialog.panel_columns.value()), (1, 1))
 

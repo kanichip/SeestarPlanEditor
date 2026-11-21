@@ -204,14 +204,18 @@ def sky_offset(ra, dec, x, y):
     return math.degrees(lon) % 360, math.degrees(lat)
 
 
-def mosaic_panel_centers(ra, dec, angle, scale, width, height, rows, columns):
+DEFAULT_PANEL_OVERLAP_PERCENT = 20
+
+
+def mosaic_panel_centers(ra, dec, angle, scale, width, height, rows, columns,
+                         *, overlap_percent=DEFAULT_PANEL_OVERLAP_PERCENT):
     """Yield J2000 panel centers in shooting order (RA in hours)."""
     origin_ra, origin_dec = math.radians(ra * 15), math.radians(dec)
     rotation = math.radians(angle)
     cos_angle, sin_angle = math.cos(rotation), math.sin(rotation)
-    # Use the same 20% overlap as the Mosaic Planner default.
-    step_x = 0.8 * 2 * math.tan(math.radians(width) / 2) * math.sqrt(scale)
-    step_y = 0.8 * 2 * math.tan(math.radians(height) / 2) * math.sqrt(scale)
+    spacing = (100 - overlap_percent) / 100
+    step_x = spacing * 2 * math.tan(math.radians(width) / 2) * math.sqrt(scale)
+    step_y = spacing * 2 * math.tan(math.radians(height) / 2) * math.sqrt(scale)
     for column in range(columns):
         x = (column - (columns - 1) / 2) * step_x
         for row in range(rows):
