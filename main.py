@@ -133,6 +133,29 @@ def render_target_card(target: dict, plan_date: date, width: int = 75, height: i
     return pixmap
 
 
+class StartTimeEdit(QLineEdit):
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.wheel_delta = 0
+
+    def wheelEvent(self, event):
+        try:
+            hours, minutes = map(int, self.text().split(':'))
+            if not (0 <= hours < 48 and 0 <= minutes < 60):
+                raise ValueError
+        except ValueError:
+            self.wheel_delta = 0
+            event.ignore()
+            return
+        self.wheel_delta += event.angleDelta().y()
+        steps = math.trunc(self.wheel_delta / 120)
+        self.wheel_delta -= steps * 120
+        if steps:
+            value = max(0, min(2879, hours * 60 + minutes + steps))
+            self.setText(clock(value))
+        event.accept()
+
+
 class TargetList(QTreeWidget):
     reordered = Signal(list)
 
@@ -213,6 +236,7 @@ class App(QMainWindow):
             'fov_height': str(MODEL_FOV['S50 Pro'][1]),
             'intensity': '100',
         }.items()}
+        self.v['start'] = StartTimeEdit(initial_start)
         self.target_dialog = TargetDialog(self)
         self.v.update(self.target_dialog.v)
         self.lp = self.target_dialog.lp
