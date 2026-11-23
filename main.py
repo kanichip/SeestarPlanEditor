@@ -560,7 +560,13 @@ class App(QMainWindow):
             return  # Allow incomplete values while typing.
         start = self.stellarium_selection_start
         self.stellarium_selection_start = None
-        if start is not None and self.editing is not None:
+        if self.show_all.isChecked() and self.targets:
+            start = max(target['start_min'] + target['duration_min'] for target in self.targets)
+            if args[1] is None:
+                last_target = max(self.targets,
+                                  key=lambda target: target['start_min'] + target['duration_min'])
+                args = (args[0], *last_target['target_ra_dec'], *args[3:])
+        elif start is not None and self.editing is not None:
             start += self.targets[self.editing]['duration_min']
         options = {} if start is None else dict(
             start_min=start, plan_date=self.stellarium_plan_dates.get(args[0]))
