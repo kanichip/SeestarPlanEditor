@@ -11,6 +11,8 @@ import sys
 import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from PySide6.QtCore import QItemSelectionModel, QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
@@ -1013,6 +1015,12 @@ class App(QMainWindow):
 
 if __name__ == '__main__':
     application = QApplication(sys.argv)
+    try:
+        with urlopen('http://localhost:8090/api/main/status', timeout=3) as response:
+            json.load(response)
+    except (URLError, OSError, ValueError):
+        QMessageBox.warning(None, 'Stellarium', 'Stellariumを起動させてください')
+        sys.exit(1)
     window = App()
     window.show()
     sys.exit(application.exec())
