@@ -15,7 +15,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from PySide6.QtCore import QItemSelectionModel, QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
@@ -83,14 +83,16 @@ def render_target_card(target: dict, plan_date: date, width: int = 75, height: i
     duration = target['duration_min']
     ra, dec = target['target_ra_dec']
 
-    samples = 10
+    samples = max(60, math.ceil(duration * 2))
     points = []
     is_below_horizon = []
+    altitudes = []
 
     for i in range(samples + 1):
         m = start_min + (duration * i / samples)
         moment = datetime.combine(plan_date, datetime.min.time()) + timedelta(minutes=m)
         alt = calculate_altitude(ra, dec, moment, lat_deg, lon_deg)
+        altitudes.append(alt)
 
         # 0度未満は0度、90度超は90度に制限
         alt_clamped = max(0.0, min(90.0, alt))
@@ -116,6 +118,11 @@ def render_target_card(target: dict, plan_date: date, width: int = 75, height: i
     end_color = QColor(255, 90, 90) if is_below_horizon[-1] else QColor(255, 255, 255)
 
     painter.setPen(Qt.PenStyle.NoPen)
+    peak_index = max(range(len(altitudes)), key=altitudes.__getitem__)
+    if 0 < peak_index < samples:
+        painter.setBrush(QColor(255, 90, 90) if is_below_horizon[peak_index]
+                         else QColor(255, 255, 255))
+        painter.drawEllipse(points[peak_index], 2.0, 2.0)
     painter.setBrush(start_color)
     painter.drawEllipse(points[0], 2.0, 2.0)
     painter.setBrush(end_color)
@@ -491,6 +498,7 @@ class App(QMainWindow):
             item = self.tree.topLevelItem(i)
             if item is not None:
                 item.setText(1, clock(t['start_min']))
+                self.update_twilight_background(item, t)
                 pixmap = render_target_card(t, plan_date, lat_deg=self.observation_latitude,
                                             lon_deg=self.observation_longitude)
                 item.setIcon(0, QIcon(pixmap))
@@ -735,6 +743,33 @@ class App(QMainWindow):
         except (ValueError, KeyError, TypeError) as exc:
             self.error(exc)
 
+    def update_twilight_background(self, item, target):
+        """Highlight exposures extending outside astronomical darkness (JST)."""
+        def sun_altitude(minutes):
+            moment = datetime.combine(self.observation_date, datetime.min.time()) + timedelta(minutes=minutes)
+            utc = moment - timedelta(hours=9)
+            days = (utc - datetime(2000, 1, 1, 12)).total_seconds() / 86400
+            # USNO approximate solar coordinates:
+            # https://aa.usno.navy.mil/faq/sun_approx
+            anomaly = math.radians((357.529 + 0.98560028 * days) % 360)
+            longitude = math.radians((280.459 + 0.98564736 * days
+                                      + 1.915 * math.sin(anomaly) + 0.020 * math.sin(2 * anomaly)) % 360)
+            obliquity = math.radians(23.439 - 0.00000036 * days)
+            ra = math.degrees(math.atan2(math.cos(obliquity) * math.sin(longitude),
+                                        math.cos(longitude))) / 15 % 24
+            dec = math.degrees(math.asin(math.sin(obliquity) * math.sin(longitude)))
+            return calculate_altitude(ra, dec, moment, self.observation_latitude,
+                                      self.observation_longitude)
+
+        start = target['start_min']
+        duration = target['duration_min']
+        steps = max(1, math.ceil(duration))
+        bright = any(sun_altitude(start + duration * i / steps) >= -18
+                     for i in range(steps + 1))
+        background = QBrush(QColor(255, 220, 220)) if bright else QBrush()
+        for column in range(item.columnCount()):
+            item.setBackground(column, background)
+
     def refresh(self):
         blocker = QSignalBlocker(self.tree)
         self.tree.clear()
@@ -745,6 +780,7 @@ class App(QMainWindow):
                                     'ON' if t['lp_filter'] else 'OFF',
                                     f'{angle:.0f}' if angle is not None else '—', str(i + 1)])
             item.setData(0, Qt.ItemDataRole.UserRole, i)
+            self.update_twilight_background(item, t)
             item.setTextAlignment(5, Qt.AlignmentFlag.AlignCenter)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
             pixmap = render_target_card(t, plan_date, lat_deg=self.observation_latitude,
