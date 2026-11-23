@@ -1,6 +1,6 @@
 # Seestar 撮影プラン
 
-Windows / Python / PySide6 / デスクトップ版Stellarium用。望遠カメラ専用です。ウィンドウタイトルにはバージョン（v0.3）を表示します。
+Windows / Python / PySide6 / デスクトップ版Stellarium用。望遠カメラ専用です。ウィンドウタイトルにはバージョン（v0.4）を表示します。
 
 左上のドロップダウンで S30 / S50 / S30 Pro / S50 Pro を選択します。初期選択は S50 Pro です。機種変更時は、その機種の望遠画角で選択対象・全表示の撮影枠を再計算します。本体に接続すると、取得した機種名に対応する項目を自動選択します。接続に失敗した場合は選択機種を維持します。
 
@@ -21,9 +21,12 @@ PowerShellの場合（プロジェクトフォルダー内）：
 
 Python 3.12（64bit）で動作確認しています。初回はプロジェクトフォルダー内で、ビルド専用の環境を作成して依存パッケージをインストールします。
 
+クローン直後は `.build-venv` がありません。通常の実行用 `.venv` を有効にしていても、バッチは `.build-venv\Scripts\python.exe` を使用するため、以下の初期設定が必要です。仮想環境の有効化は不要です。
+
 ```powershell
 python -m venv .build-venv
 .\.build-venv\Scripts\python.exe -m pip install -r requirements-build.txt
+.\build_onedir.bat
 ```
 
 以降は次のバッチでビルドできます。
@@ -31,6 +34,10 @@ python -m venv .build-venv
 ```powershell
 .\build_onedir.bat
 ```
+
+`Build environment not found: .build-venv` と表示された場合は、上記の環境作成と依存パッケージのインストールを実行してください。
+
+Seestar接続時に更新を求めるメッセージが出た場合は、認証鍵の読み込み失敗の可能性もあります。ビルド元の `seestar.pem` と、ビルド後の `dist\SeestarPlanEditor\_internal\seestar.pem` を確認してください。実行時は、有効な `SEESTAR_KEY_PATH` が設定されていればそのファイルを優先し、空または存在しないパスなら同梱PEMを参照します。
 
 `SeestarPlanEditor.spec` を使用した標準の **onedir** ビルドです。PySide6・Qt・shiboken6の特別な除外・再配置処理は行わず、PyInstallerの標準フックで収集します。依存ファイルは `contents_directory='_internal'` により、次の構成にまとめます。
 

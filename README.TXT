@@ -65,6 +65,29 @@ Seestar の望遠カメラ用撮影プランを作成する Windows アプリで
 回転角の符号・基準方向は未検証です。Seestar アプリに取り込んだ後は
 フレーミング画面で構図を確認してください。
 
+■ ソースコードからのビルド
+
+Python 3.12（64bit）で動作確認しています。
+クローン後、プロジェクトフォルダーでPowerShellから次を実行してください。
+
+  python -m venv .build-venv
+  .\.build-venv\Scripts\python.exe -m pip install -r requirements-build.txt
+  .\build_onedir.bat
+
+ビルドには通常の実行用 .venv とは別の .build-venv を使用します。
+仮想環境の有効化は不要です。2回目以降は .\build_onedir.bat だけで実行できます。
+「Build environment not found: .build-venv」と表示された場合は、
+上記の環境作成と依存パッケージのインストールを実行してください。
+配布するときは dist\SeestarPlanEditor フォルダー全体をコピーします。
+
+■ Seestar接続時の認証鍵
+
+接続時の更新要求は、認証鍵の読み込み失敗でも発生する可能性があります。
+ビルド元に seestar.pem があると、_internal\seestar.pem に同梱されます。
+接続できない場合は、このファイルが配布フォルダーにあるか確認してください。
+環境変数 SEESTAR_KEY_PATH が有効なファイルを指していればそちらを優先します。
+空または存在しないパスなら、同梱のPEMを参照します。
+
 ■ ライセンス
 
 SeestarPlanEditor は GNU General Public License v3 で公開しています。
