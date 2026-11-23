@@ -294,6 +294,7 @@ class App(QMainWindow):
         file_menu = self.menuBar().addMenu('ファイル')
         file_menu.addAction('保存', self.save).setShortcut('Ctrl+S')
         file_menu.addAction('開く', self.load).setShortcut('Ctrl+O')
+        file_menu.addAction('追加読み込み', self.append_plan)
         file_menu.addSeparator()
         self.always_on_top_action = file_menu.addAction('常に手前に表示')
         self.always_on_top_action.setCheckable(True)
@@ -887,6 +888,29 @@ class App(QMainWindow):
             self.refresh()
             self.dirty = False
             self.status.setText('読み込みました。カメラは望遠に固定されます。')
+        except Exception as exc:
+            self.error(exc)
+
+    def append_plan(self):
+        try:
+            self.guard_form()
+            path = QFileDialog.getOpenFileName(self, 'プランを追加読み込み', '', '撮影プラン (*.json)')[0]
+            if not path:
+                return
+            data = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+            plan = build_plan(data['plan_name'], data['list'])
+            additions = copy.deepcopy(plan['list'])
+            used_ids = {target['target_id'] for target in self.targets}
+            for target in additions:
+                while target['target_id'] in used_ids:
+                    target['target_id'] = secrets.randbelow(900000000) + 100000000
+                used_ids.add(target['target_id'])
+            targets = schedule_targets(self.targets + additions, self.v['start'].text())
+            self.targets = targets
+            self.reset()
+            self.refresh()
+            self.dirty = True
+            self.status.setText(f'対象を{len(additions)}件追加しました。撮影時刻は現在の開始時刻から再計算しました。')
         except Exception as exc:
             self.error(exc)
 
