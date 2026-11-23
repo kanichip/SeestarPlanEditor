@@ -560,6 +560,8 @@ class App(QMainWindow):
             return  # Allow incomplete values while typing.
         start = self.stellarium_selection_start
         self.stellarium_selection_start = None
+        if start is not None and self.editing is not None:
+            start += self.targets[self.editing]['duration_min']
         options = {} if start is None else dict(
             start_min=start, plan_date=self.stellarium_plan_dates.get(args[0]))
         frames = copy.deepcopy(self.targets) if self.show_all.isChecked() else None
@@ -590,7 +592,7 @@ class App(QMainWindow):
             if not error:
                 self.stellarium_frame_count = len(frames) if frames is not None else 0
             self.status.setText(f'Stellariumの表示を更新できませんでした: {error}' if error
-                            else (f'Stellariumを対象の位置・開始時刻 {clock(start)} に変更しました。'
+                            else (f'Stellariumを対象の位置・終了時刻 {clock(start)} に変更しました。'
                                   if start is not None else 'Stellariumに撮影範囲を描画しました。'))
         self.run_job(work, done)
 
