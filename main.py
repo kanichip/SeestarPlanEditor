@@ -164,8 +164,18 @@ class TargetList(QTreeWidget):
 
 
 class App(QMainWindow):
-    def __init__(self):
+    def __init__(self, stellarium_status=None):
         super().__init__()
+        self.observation_date = date.today()
+        self.observation_latitude = 35.68
+        self.observation_longitude = 139.76
+        initial_start = '21:00'
+        if stellarium_status is not None:
+            moment = datetime.fromisoformat(stellarium_status['time']['local'])
+            self.observation_date = moment.date()
+            initial_start = moment.strftime('%H:%M')
+            self.observation_latitude = float(stellarium_status['location']['latitude'])
+            self.observation_longitude = float(stellarium_status['location']['longitude'])
         self.setWindowTitle('Seestar Plan Editor v0.3')
         self.resize(350, 450)
         self.setMinimumSize(350, 400)
@@ -185,8 +195,8 @@ class App(QMainWindow):
         self.frame_deselected = False
         self.numeric_values = {}
         self.v = {key: QLineEdit(value) for key, value in {
-            'url': 'http://localhost:8090', 'plan': date.today().strftime('%Y%m%d'),
-            'name': '', 'ra': '', 'dec': '', 'start': '21:00', 'duration': '30',
+            'url': 'http://localhost:8090', 'plan': self.observation_date.strftime('%Y%m%d'),
+            'name': '', 'ra': '', 'dec': '', 'start': initial_start, 'duration': '30',
             'angle': '0', 'scale': '1.0',
             'fov_width': str(MODEL_FOV['S50 Pro'][0]),
             'fov_height': str(MODEL_FOV['S50 Pro'][1]),
@@ -239,7 +249,7 @@ class App(QMainWindow):
         plan.addWidget(QLabel('プラン名'))
         self.v['plan'].setMaximumWidth(100)
         plan.addWidget(self.v['plan'])
-        self.today_label = QLabel(date.today().strftime('%Y%m%d'))
+        self.today_label = QLabel(self.observation_date.strftime('%Y%m%d'))
         #plan.addWidget(self.today_label)
         plan.addWidget(QLabel('開始時刻'))
         self.v['start'].setMaximumWidth(75)
@@ -476,12 +486,13 @@ class App(QMainWindow):
             self.status.setText(str(exc))
             return
         self.targets = targets
-        plan_date = date.today()
+        plan_date = self.observation_date
         for i, t in enumerate(self.targets):
             item = self.tree.topLevelItem(i)
             if item is not None:
                 item.setText(1, clock(t['start_min']))
-                pixmap = render_target_card(t, plan_date)
+                pixmap = render_target_card(t, plan_date, lat_deg=self.observation_latitude,
+                                            lon_deg=self.observation_longitude)
                 item.setIcon(0, QIcon(pixmap))
         if self.editing is not None:
             self.stellarium_selection_start = self.targets[self.editing]['start_min']
@@ -719,7 +730,7 @@ class App(QMainWindow):
     def refresh(self):
         blocker = QSignalBlocker(self.tree)
         self.tree.clear()
-        plan_date = date.today()
+        plan_date = self.observation_date
         for i, t in enumerate(self.targets):
             angle = (t.get('mosaic') or {}).get('angle')
             item = QTreeWidgetItem([t['target_name'], clock(t['start_min']), str(t['duration_min']),
@@ -728,7 +739,8 @@ class App(QMainWindow):
             item.setData(0, Qt.ItemDataRole.UserRole, i)
             item.setTextAlignment(5, Qt.AlignmentFlag.AlignCenter)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
-            pixmap = render_target_card(t, plan_date)
+            pixmap = render_target_card(t, plan_date, lat_deg=self.observation_latitude,
+                                            lon_deg=self.observation_longitude)
             item.setIcon(0, QIcon(pixmap))
             self.tree.addTopLevelItem(item)
         self.schedule_stellarium_frame()
@@ -1017,10 +1029,10 @@ if __name__ == '__main__':
     application = QApplication(sys.argv)
     try:
         with urlopen('http://localhost:8090/api/main/status', timeout=3) as response:
-            json.load(response)
+            stellarium_status = json.load(response)
     except (URLError, OSError, ValueError):
         QMessageBox.warning(None, 'Stellarium', 'Stellariumを起動させてください')
         sys.exit(1)
-    window = App()
+    window = App(stellarium_status)
     window.show()
     sys.exit(application.exec())
