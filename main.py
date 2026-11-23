@@ -5,6 +5,7 @@ import copy
 import io
 import json
 import math
+import os
 import queue
 import secrets
 import sys
@@ -14,7 +15,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from PySide6.QtCore import QItemSelectionModel, QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QItemSelectionModel, QPointF, QRectF, QSettings, QSignalBlocker, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog,
@@ -173,6 +174,9 @@ class TargetList(QTreeWidget):
 class App(QMainWindow):
     def __init__(self, stellarium_status=None):
         super().__init__()
+        settings_path = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')) / 'SeestarPlanEditor' / 'settings.ini'
+        self.settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+        self.last_plan_path = self.settings.value('last_plan_path', '')
         self.observation_date = date.today()
         self.observation_latitude = 35.68
         self.observation_longitude = 139.76
@@ -342,12 +346,40 @@ class App(QMainWindow):
         self.lp.toggled.connect(self.mark_form_dirty)
         self.framing.toggled.connect(self.mark_form_dirty)
         self.model_combo.currentTextChanged.connect(self.model_changed)
+        self.restore_settings()
         self.model_changed(self.model_combo.currentText())
         self.poll_timer.start(100)
         self.startup_timer = QTimer(self)
         self.startup_timer.setSingleShot(True)
         self.startup_timer.timeout.connect(self.clear_startup_frames)
         self.startup_timer.start(0)
+
+    def restore_settings(self):
+        model = self.settings.value('model', 'S50 Pro')
+        if model in MODEL_FOV:
+            self.model_combo.setCurrentText(model)
+        try:
+            overlap = int(self.settings.value('panel_overlap', DEFAULT_PANEL_OVERLAP_PERCENT))
+            if 0 <= overlap <= 99:
+                self.target_dialog.panel_overlap.setValue(overlap)
+        except (TypeError, ValueError):
+            pass
+        try:
+            duration = int(self.settings.value('panel_duration', 30))
+            if duration > 0:
+                self.v['duration'].setText(str(duration))
+        except (TypeError, ValueError):
+            pass
+        self.form_dirty = False
+
+    def save_settings(self):
+        self.settings.setValue('model', self.model_combo.currentText())
+        self.settings.setValue('panel_overlap', self.target_dialog.panel_overlap.value())
+        self.settings.setValue('panel_duration', self.v['duration'].text())
+        self.settings.setValue('last_plan_path', self.last_plan_path)
+        self.settings.sync()
+        if self.settings.status() != QSettings.Status.NoError:
+            raise OSError('設定ファイルを保存できませんでした。')
 
     def model_changed(self, model):
         width, height = MODEL_FOV[model]
@@ -837,7 +869,6 @@ class App(QMainWindow):
         self.target_dialog.extended_mosaic.setChecked(False)
         self.target_dialog.panel_rows.setValue(1)
         self.target_dialog.panel_columns.setValue(1)
-        self.target_dialog.panel_overlap.setValue(DEFAULT_PANEL_OVERLAP_PERCENT)
         self.frame_deselected = False
         self.form_dirty = False
 
@@ -872,7 +903,7 @@ class App(QMainWindow):
     def load(self):
         if (self.dirty or self.form_dirty) and not self.confirm('編集内容', '現在の編集を破棄して開きますか？'):
             return
-        path = QFileDialog.getOpenFileName(self, 'プランを開く', '', '撮影プラン (*.json)')[0]
+        path = QFileDialog.getOpenFileName(self, 'プランを開く', self.last_plan_path, '撮影プラン (*.json)')[0]
         if not path:
             return
         try:
@@ -887,6 +918,7 @@ class App(QMainWindow):
             self.reset()
             self.refresh()
             self.dirty = False
+            self.last_plan_path = path
             self.status.setText('読み込みました。カメラは望遠に固定されます。')
         except Exception as exc:
             self.error(exc)
@@ -894,7 +926,7 @@ class App(QMainWindow):
     def append_plan(self):
         try:
             self.guard_form()
-            path = QFileDialog.getOpenFileName(self, 'プランを追加読み込み', '', '撮影プラン (*.json)')[0]
+            path = QFileDialog.getOpenFileName(self, 'プランを追加読み込み', self.last_plan_path, '撮影プラン (*.json)')[0]
             if not path:
                 return
             data = json.loads(Path(path).read_text(encoding='utf-8-sig'))
@@ -907,6 +939,7 @@ class App(QMainWindow):
                 used_ids.add(target['target_id'])
             targets = schedule_targets(self.targets + additions, self.v['start'].text())
             self.targets = targets
+            self.last_plan_path = path
             self.reset()
             self.refresh()
             self.dirty = True
@@ -1090,6 +1123,10 @@ class App(QMainWindow):
             return
         self.frame_timer.stop()
         self.poll_timer.stop()
+        try:
+            self.save_settings()
+        except OSError as exc:
+            self.error(exc)
         event.accept()
 
 
