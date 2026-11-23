@@ -210,7 +210,7 @@ class App(QMainWindow):
             initial_start = moment.strftime('%H:%M')
             self.observation_latitude = float(stellarium_status['location']['latitude'])
             self.observation_longitude = float(stellarium_status['location']['longitude'])
-        self.setWindowTitle('Seestar Plan Editor v0.3')
+        self.setWindowTitle('Seestar Plan Editor v0.4')
         self.resize(350, 450)
         self.setMinimumSize(350, 400)
         self.targets = []
