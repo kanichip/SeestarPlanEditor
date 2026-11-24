@@ -1,6 +1,8 @@
 """Exercise the PySide6 controls, signals and timers."""
 import time
+import io
 import json
+import os
 import tempfile
 import unittest
 from datetime import date
@@ -8,9 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtCore import QEvent, QPoint, QSignalBlocker, QTimer, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QLabel
+from PySide6.QtWidgets import QApplication, QCheckBox, QDialog, QDialogButtonBox, QLabel, QMenu
 
-from main import App, render_target_card
+from main import App, render_target_card, run_application
 from packaging_entry import run
 
 
@@ -42,6 +44,48 @@ class StartupTests(unittest.TestCase):
         with patch('sys.argv', ['SeestarPlanEditor.exe']), patch('main.run_application', return_value=0) as startup:
             self.assertEqual(run(), 0)
         startup.assert_called_once_with()
+
+    def test_option_persists_only_when_accepted_and_controls_next_startup(self):
+        status = {
+            'time': {'local': '2027-01-01T01:30:00'},
+            'location': {'latitude': 35.68, 'longitude': 139.76},
+        }
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'APPDATA': folder}):
+            window = App()
+            window.startup_timer.stop()
+            window.poll_timer.stop()
+            self.addCleanup(window.deleteLater)
+            other_menu = next(menu for menu in window.menuBar().findChildren(QMenu) if menu.title() == 'その他')
+            option = next(action for action in other_menu.actions() if action.text() == 'OPTION')
+            initial_states = []
+
+            def toggle_option(button):
+                dialog = QApplication.activeModalWidget()
+                checkbox = dialog.findChild(QCheckBox)
+                initial_states.append(checkbox.isChecked())
+                checkbox.toggle()
+                dialog.findChild(QDialogButtonBox).button(button).click()
+
+            for button, sync_enabled in ((QDialogButtonBox.StandardButton.Cancel, True),
+                                         (QDialogButtonBox.StandardButton.Ok, False),
+                                         (QDialogButtonBox.StandardButton.Ok, True)):
+                QTimer.singleShot(0, lambda: toggle_option(button))
+                option.trigger()
+                with (patch('main.QApplication') as application,
+                      patch('main.App') as create_window,
+                      patch('main.urlopen', return_value=io.StringIO(json.dumps(status))) as request):
+                    application.return_value.exec.return_value = 0
+                    self.assertEqual(run_application(), 0)
+                    create_window.assert_called_once_with(status if sync_enabled else None)
+                    request.assert_called_once()
+                with (patch('main.QApplication'),
+                      patch('main.App') as create_window,
+                      patch('main.QMessageBox.warning') as warning,
+                      patch('main.urlopen', side_effect=OSError('Stellarium unavailable'))):
+                    self.assertEqual(run_application(), 1)
+                    warning.assert_called_once()
+                    create_window.assert_not_called()
+            self.assertEqual(initial_states, [True, True, False])
 
 
 class FramingTests(unittest.TestCase):

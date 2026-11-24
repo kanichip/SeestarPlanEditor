@@ -18,7 +18,7 @@ from urllib.request import urlopen
 from PySide6.QtCore import QItemSelectionModel, QPointF, QRectF, QSettings, QSignalBlocker, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog,
+    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -35,6 +35,16 @@ from planner import (DEFAULT_PANEL_OVERLAP_PERCENT, build_plan, calculate_altitu
 
 
 DEFAULT_STELLARIUM_URL = 'http://localhost:8090'
+SYNC_STELLARIUM_TIME = 'sync_stellarium_time_on_startup'
+
+
+def open_settings():
+    settings_path = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')) / 'SeestarPlanEditor' / 'settings.ini'
+    return QSettings(str(settings_path), QSettings.Format.IniFormat)
+
+
+def sync_stellarium_time_enabled(settings: QSettings) -> bool:
+    return bool(settings.value(SYNC_STELLARIUM_TIME, True, type=bool))
 
 
 # Approximate telephoto field of view (short edge, long edge), in degrees.
@@ -200,8 +210,7 @@ class TargetList(QTreeWidget):
 class App(QMainWindow):
     def __init__(self, stellarium_status=None):
         super().__init__()
-        settings_path = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')) / 'SeestarPlanEditor' / 'settings.ini'
-        self.settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+        self.settings = open_settings()
         self.last_plan_path = self.settings.value('last_plan_path', '')
         self.observation_date = date.today()
         self.observation_latitude = 35.68
@@ -350,6 +359,7 @@ class App(QMainWindow):
         self.guide_action.setCheckable(True)
         self.guide_action.toggled.connect(self.guide_label.setVisible)
         self.guide_action.toggled.connect(self.status.setVisible)
+        other_menu.addAction('OPTION', self.edit_options)
         self.tree.itemSelectionChanged.connect(self.select)
         self.tree.reordered.connect(self.reorder_targets)
         self.tree.itemDoubleClicked.connect(self.edit_target)
@@ -407,11 +417,33 @@ class App(QMainWindow):
             pass
         self.form_dirty = False
 
+    def edit_options(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('OPTION')
+        layout = QVBoxLayout(dialog)
+        sync_time = QCheckBox('起動時のStellarium時刻の同期', dialog)
+        sync_time.setChecked(sync_stellarium_time_enabled(self.settings))
+        layout.addWidget(sync_time)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.settings.setValue(SYNC_STELLARIUM_TIME, sync_time.isChecked())
+            try:
+                self.sync_settings()
+            except OSError as exc:
+                self.error(exc)
+        dialog.deleteLater()
+
     def save_settings(self):
         self.settings.setValue('model', self.model_combo.currentText())
         self.settings.setValue('panel_overlap', self.target_dialog.panel_overlap.value())
         self.settings.setValue('panel_duration', self.v['duration'].text())
         self.settings.setValue('last_plan_path', self.last_plan_path)
+        self.sync_settings()
+
+    def sync_settings(self):
         self.settings.sync()
         if self.settings.status() != QSettings.Status.NoError:
             raise OSError('設定ファイルを保存できませんでした。')
@@ -1173,6 +1205,8 @@ def run_application():
     except (URLError, OSError, ValueError):
         QMessageBox.warning(None, 'Stellarium', 'Stellariumを起動させてください')
         return 1
+    if not sync_stellarium_time_enabled(open_settings()):
+        stellarium_status = None
     window = App(stellarium_status)
     window.show()
     return application.exec()
