@@ -34,6 +34,9 @@ from planner import (DEFAULT_PANEL_OVERLAP_PERCENT, build_plan, calculate_altitu
                      schedule_targets, selected_object)
 
 
+DEFAULT_STELLARIUM_URL = 'http://localhost:8090'
+
+
 # Approximate telephoto field of view (short edge, long edge), in degrees.
 # Pro/S50: https://us.seestar.com/blogs/review/s50-pro-s30-pro-vs-s50-has-a-new-star-king-been-born
 # S30: same pixel dimensions/pitch as S50, with a 150 mm rather than 250 mm lens.
@@ -204,10 +207,16 @@ class App(QMainWindow):
         self.observation_latitude = 35.68
         self.observation_longitude = 139.76
         initial_start = '21:00'
+        after_midnight = False
         if stellarium_status is not None:
             moment = datetime.fromisoformat(stellarium_status['time']['local'])
             self.observation_date = moment.date()
-            initial_start = moment.strftime('%H:%M')
+            start_minutes = moment.hour * 60 + moment.minute
+            after_midnight = moment.hour < 6
+            if after_midnight:
+                self.observation_date -= timedelta(days=1)
+                start_minutes += 24 * 60
+            initial_start = clock(start_minutes)
             self.observation_latitude = float(stellarium_status['location']['latitude'])
             self.observation_longitude = float(stellarium_status['location']['longitude'])
         self.setWindowTitle('Seestar Plan Editor v0.4')
@@ -224,12 +233,14 @@ class App(QMainWindow):
         self.stellarium_frame_enabled = False
         self.stellarium_selection_start = None
         self.stellarium_plan_dates = {}
+        if after_midnight:
+            self.stellarium_plan_dates[DEFAULT_STELLARIUM_URL] = self.observation_date
         self.stellarium_frame_count = 0
         self.committed_frames = []
         self.frame_deselected = False
         self.numeric_values = {}
         self.v = {key: QLineEdit(value) for key, value in {
-            'url': 'http://localhost:8090', 'plan': self.observation_date.strftime('%Y%m%d'),
+            'url': DEFAULT_STELLARIUM_URL, 'plan': self.observation_date.strftime('%Y%m%d'),
             'name': '', 'ra': '', 'dec': '', 'start': initial_start, 'duration': '30',
             'angle': '0', 'scale': '1.0',
             'fov_width': str(MODEL_FOV['S50 Pro'][0]),
@@ -1154,14 +1165,18 @@ class App(QMainWindow):
         event.accept()
 
 
-if __name__ == '__main__':
+def run_application():
     application = QApplication(sys.argv)
     try:
-        with urlopen('http://localhost:8090/api/main/status', timeout=3) as response:
+        with urlopen(DEFAULT_STELLARIUM_URL + '/api/main/status', timeout=3) as response:
             stellarium_status = json.load(response)
     except (URLError, OSError, ValueError):
         QMessageBox.warning(None, 'Stellarium', 'Stellariumを起動させてください')
-        sys.exit(1)
+        return 1
     window = App(stellarium_status)
     window.show()
-    sys.exit(application.exec())
+    return application.exec()
+
+
+if __name__ == '__main__':
+    sys.exit(run_application())

@@ -11,6 +11,37 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QLabel
 
 from main import App, render_target_card
+from packaging_entry import run
+
+
+class StartupTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.qt = QApplication.instance() or QApplication([])
+
+    def test_stellarium_start_time_and_observation_date(self):
+        for local, expected_time, expected_date in (
+            ('2026-12-31T23:59:00', '23:59', date(2026, 12, 31)),
+            ('2027-01-01T00:00:00', '24:00', date(2026, 12, 31)),
+            ('2027-01-01T05:59:00', '29:59', date(2026, 12, 31)),
+            ('2027-01-01T06:00:00', '06:00', date(2027, 1, 1)),
+        ):
+            with self.subTest(local=local):
+                window = App({
+                    'time': {'local': local},
+                    'location': {'latitude': 35.68, 'longitude': 139.76},
+                })
+                window.startup_timer.stop()
+                window.poll_timer.stop()
+                self.assertEqual(window.v['start'].text(), expected_time)
+                self.assertEqual(window.observation_date, expected_date)
+                if expected_time.startswith(('24:', '29:')):
+                    self.assertEqual(window.stellarium_plan_dates[window.v['url'].text()], expected_date)
+
+    def test_executable_uses_shared_startup(self):
+        with patch('sys.argv', ['SeestarPlanEditor.exe']), patch('main.run_application', return_value=0) as startup:
+            self.assertEqual(run(), 0)
+        startup.assert_called_once_with()
 
 
 class FramingTests(unittest.TestCase):
