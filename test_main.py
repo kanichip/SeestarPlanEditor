@@ -21,6 +21,7 @@ class StartupTests(unittest.TestCase):
     def setUpClass(cls):
         cls.qt = QApplication.instance() or QApplication([])
 
+    # Stellarium の日付またぎを確認する。00:00〜05:59 は前日の24:00〜29:59になり、撮影枠の基準日も前日になること。23:59 と06:00 は当日扱いになること。
     def test_stellarium_start_time_and_observation_date(self):
         for local, expected_time, expected_date in (
             ('2026-12-31T23:59:00', '23:59', date(2026, 12, 31)),
@@ -40,11 +41,14 @@ class StartupTests(unittest.TestCase):
                 if expected_time.startswith(('24:', '29:')):
                     self.assertEqual(window.stellarium_plan_dates[window.v['url'].text()], expected_date)
 
+    # EXE の通常起動を確認する。共通起動処理が1回呼ばれ、その終了コード0が返ること。
     def test_executable_uses_shared_startup(self):
         with patch('sys.argv', ['SeestarPlanEditor.exe']), patch('main.run_application', return_value=0) as startup:
             self.assertEqual(run(), 0)
         startup.assert_called_once_with()
 
+    # 同期設定の保存と起動時の反映を確認する。初期値はONで、キャンセル後もON、OKでOFFとONが保存されること。
+    # ONは25:30、OFFは21:00で始まり、どちらも観測日と観測地点を反映すること。接続失敗時は警告を1回表示し、画面を作らず終了コード1を返すこと。
     def test_option_persists_only_when_accepted_and_controls_next_startup(self):
         status = {
             'time': {'local': '2027-01-01T01:30:00'},
@@ -133,12 +137,14 @@ class FramingTests(unittest.TestCase):
                 time.sleep(0.01)
             self.fail('Framing change did not finish drawing')
 
+    # 角度の手入力を確認する。45°を入力すると回転が自動でONになり、撮影枠の描画に45°が渡ること。
     def test_angle_automatically_enables_rotation(self):
         self.assertFalse(self.app.framing.isChecked())
         args = self.sent_frame(lambda: self.app.v['angle'].setText('45'))
         self.assertTrue(self.app.framing.isChecked())
         self.assertEqual(args[3], 45)
 
+    # 起動時の撮影枠消去を確認する。ローカルの Stellarium に消去処理を1回呼び出し、処理中の状態が解除されること。
     def test_startup_clears_previous_frames(self):
         with patch('main.clear_stellarium_frames') as clear:
             self.app.startup_timer.timeout.emit()
@@ -149,6 +155,7 @@ class FramingTests(unittest.TestCase):
             self.assertFalse(self.app.busy)
             clear.assert_called_once_with('http://localhost:8090')
 
+    # 回転スライダーと数値欄の連動を確認する。−75°が数値欄と描画に反映され、範囲は−90〜90°で、120°を入力してもスライダーは90°に収まること。
     def test_rotation_slider_and_text_stay_in_sync(self):
         args = self.sent_frame(lambda: self.app.angle_slider.setValue(-75))
         self.assertEqual(args[3], -75)
@@ -160,6 +167,7 @@ class FramingTests(unittest.TestCase):
         self.app.v['angle'].setText('120')
         self.assertEqual(self.app.angle_slider.value(), 90)
 
+    # 撮影プランの保存と再読み込みを確認する。45°・1.5倍がJSONに45°・面積倍率2.25として保存され、読み込み後に45°・1.5倍へ復元されて未保存扱いにならないこと。
     def test_json_dialogs_round_trip_rotation_and_scale(self):
         self.app.v['angle'].setText('45')
         self.app.v['scale'].setText('1.5')
@@ -178,6 +186,7 @@ class FramingTests(unittest.TestCase):
             self.assertEqual(self.app.angle_slider.value(), 45)
             self.assertFalse(self.app.form_dirty)
 
+    # 共有QRの表示を確認する。ダイアログが1つ開き、画像付きのラベルが表示されること。
     def test_qr_dialog_has_image(self):
         self.app.show_qr('https://example.com/plan')
         visible_dialogs = [dialog for dialog in self.app.findChildren(QDialog) if dialog.isVisible()]
@@ -185,6 +194,7 @@ class FramingTests(unittest.TestCase):
         labels = visible_dialogs[0].findChildren(QLabel)
         self.assertTrue(any(not label.pixmap().isNull() for label in labels))
 
+    # 倍率を変更すると撮影枠が自動でONになり、1.7倍は面積倍率2.89として描画に渡ること。1.234倍を手入力すると入力精度を保ち、スライダーは1.2倍相当になること。
     def test_scale_automatically_enables_framing(self):
         args = self.sent_frame(lambda: self.app.scale_slider.setValue(17))
         self.assertTrue(self.app.framing.isChecked())
@@ -194,6 +204,7 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(self.app.scale_slider.value(), 12)
         self.assertEqual(self.app.v['scale'].text(), '1.234')
 
+    # 撮影枠設定を無効にしたときの描画を確認する。回転角が0°、倍率が1倍に戻ること。
     def test_disabling_resets_stellarium_rotation(self):
         self.sent_frame(lambda: self.app.v['angle'].setText('45'))
         args = self.sent_frame(lambda: self.app.framing.setChecked(False))
@@ -206,6 +217,7 @@ class FramingTests(unittest.TestCase):
         self.app.v['duration'].setText(str(duration))
         self.app.commit()
 
+    # 対象を登録した直後の撮影枠を確認する。フォームの赤経欄と編集状態がクリアされても、登録した座標・角度・倍率で描画すること。
     def test_commit_keeps_frame_after_clearing_form(self):
         self.app.v['name'].setText('M1')
         self.app.v['angle'].setText('45')
@@ -215,6 +227,7 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(self.app.v['ra'].text(), '')
         self.assertIsNone(self.app.editing)
 
+    # 一覧の空白クリックを確認する。対象の選択がすべて解除され、編集状態も解除されること。
     def test_clicking_empty_list_area_deselects_target(self):
         self.add_target('M1', 30)
         self.app.tree.setCurrentItem(self.app.tree.topLevelItem(0))
@@ -225,6 +238,7 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(self.app.tree.selectedItems(), [])
         self.assertIsNone(self.app.editing)
 
+    # Ctrlクリックで選択を追加し、Shiftクリックで範囲選択できること。選択した3件を削除するとM2だけが21:00開始で残り、選択が解除されること。
     def test_ctrl_and_shift_select_multiple_targets_and_remove_them(self):
         for number in range(1, 5):
             self.add_target(f'M{number}', 10 * number)
@@ -250,6 +264,7 @@ class FramingTests(unittest.TestCase):
                          [('M2', 1260)])
         self.assertEqual(tree.selectedItems(), [])
 
+    # 編集後に別の天体を取得する場面を確認する。新規ダイアログが1回開き、回転0°・倍率1倍・回転OFFで始まり、キャンセル後も既存対象の設定が残ること。
     def test_fetch_starts_with_default_framing_after_editing_target(self):
         self.app.v['angle'].setText('45')
         self.app.v['scale'].setText('1.5')
@@ -273,6 +288,7 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(self.app.targets[0]['mosaic'],
                          dict(angle=45, star_map_angle=45, scale=2.25))
 
+    # 天体取得ダイアログのプレビューを確認する。初期枠、45°・1.5倍に変更した枠、キャンセル後の消去がこの順に描画へ渡ること。
     def test_fetch_previews_framing_changes_and_clears_frame_on_cancel(self):
         dialog = self.app.target_dialog
         drawn_frames = []
@@ -309,6 +325,7 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(drawn_frames, [(5, 40, 0, 1), (5, 40, 45, 2.25),
                                        (None, None, 0, 1)])
 
+    # 選択解除済みの対象で全表示を切り替える。ONでは1件の枠と終了時刻が渡り、OFFではその枠を消去し、個別枠や時刻を指定しないこと。
     def test_all_frames_off_does_not_redraw_deselected_target(self):
         self.add_target('M1', 30)
         self.app.tree.setCurrentItem(self.app.tree.topLevelItem(0))
@@ -324,6 +341,7 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(self.sent_options['previous_count'], 1)
         self.assertNotIn('start_min', self.sent_options)
 
+    # プランの読み込みと追加時の表示名を確認する。元の名前と対応する連番付きの名前は元名で表示し、対応する元名のない Other_2 P1 はそのまま表示すること。
     def test_loading_restores_suffixed_names_when_original_is_present(self):
         for name in ('Pleiadesx P1', 'Pleiadesx_2 P1', 'Other_2 P1'):
             self.add_target(name, 30)
@@ -340,6 +358,7 @@ class FramingTests(unittest.TestCase):
         expected = ['Pleiadesx P1', 'Pleiadesx P1', 'Other_2 P1', 'Pleiadesx P1', 'Other_2 P1']
         self.assertEqual([self.app.tree.topLevelItem(i).text(0) for i in range(5)], expected)
 
+    # 同じプランを2回追加したときの枠表示を確認する。通常は選択したグループの2枠を表示して未選択枠を薄くし、全表示では全枠を薄くせずに描画すること。
     def test_appending_same_plan_twice_draws_only_the_selected_group(self):
         self.add_target('M1 P1', 30)
         self.add_target('M1 P2', 30)
@@ -364,6 +383,8 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(self.sent_options['selected_index'], 5)
         self.assertFalse(self.sent_options['dim_unselected'])
 
+    # 拡張モザイクのプレビューと登録結果を確認する。4枠から6枠に増やせて、重なりを増やすと枠間隔が狭まり、番号と座標が重複しないこと。
+    # 登録後はプレビューと同じ座標の6件が10分間隔で並び、LP設定を引き継ぐこと。編集欄は通常状態に戻り、撮影時間と重なり率は設定から復元できること。
     def test_extended_mosaic_preview_matches_added_panels(self):
         self.app.v['duration'].setText('10')
         self.app.save_settings()
@@ -423,6 +444,7 @@ class FramingTests(unittest.TestCase):
         self.app.restore_settings()
         self.assertEqual(dialog.panel_overlap.value(), 40)
 
+    # 登録済みの行を選択すると、天体を再取得せずに座標・角度・倍率・S30 Proの画角と対象の開始時刻が描画に渡ること。基準日は未指定で、プランの開始時刻欄は21:00のままであること。
     def test_select_syncs_position_framing_and_target_start_without_fetch(self):
         self.app.model_combo.setCurrentText('S30 Pro')
         self.add_target('M1', 30)
@@ -441,6 +463,7 @@ class FramingTests(unittest.TestCase):
         self.assertIsNone(self.sent_options['plan_date'])
         self.assertEqual(self.app.v['start'].text(), '21:00')
 
+    # 追加・撮影時間の編集・開始時刻の変更・削除で各行の開始時刻が再計算されること。翌日00:30は24:30と表示し、行選択や時刻の再計算でフォームが未保存扱いにならないこと。
     def test_schedule_updates_after_add_edit_start_change_and_delete(self):
         self.add_target('M1', 30)
         self.add_target('M2', 45)
@@ -461,6 +484,7 @@ class FramingTests(unittest.TestCase):
         self.app.remove()
         self.assertEqual([t['start_min'] for t in self.app.targets], [1410, 1470])
 
+    # 座標と角度の表示精度を確認する。表示は丸められても、値を編集せずに再登録したときは元の精度で保存されること。
     def test_numeric_display_preserves_original_precision(self):
         self.add_target('M1', 30)
         self.app.targets[0]['target_ra_dec'] = [23.999999, -12.3456789]
@@ -475,6 +499,7 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(self.app.targets[0]['mosaic']['angle'], 12.3456789)
         self.assertEqual(self.app.tree.topLevelItem(0).text(4), '12')
 
+    # 六十進法の座標入力を確認する。赤経12:30と赤緯−00:30が12.5時と−0.5°に変換され、その値で描画・保存されること。
     def test_sexagesimal_input_is_sent_and_saved_in_original_units(self):
         self.app.v['name'].setText('M1')
         def change():
@@ -485,6 +510,7 @@ class FramingTests(unittest.TestCase):
         self.app.commit()
         self.assertEqual(self.app.targets[0]['target_ra_dec'], [12.5, -0.5])
 
+    # LP列が回転列の直前にあり、対象ごとのON／OFFが表示されること。行を選ぶと設定がフォームに反映され、変更して登録すると一覧も更新されること。
     def test_lp_filter_column_precedes_rotation_and_updates(self):
         self.add_target('M1', 30)
         self.app.lp.setChecked(True)
@@ -500,6 +526,7 @@ class FramingTests(unittest.TestCase):
         self.app.commit()
         self.assertEqual(self.app.tree.topLevelItem(0).text(3), 'ON')
 
+    # 並べ替え後に対象順と開始時刻が更新され、複数選択・編集中の行・未保存の60分入力が移動先で保持されること。登録すると移動先の対象に60分が保存されること。
     def test_drag_reorders_times_and_preserves_unsaved_form(self):
         self.add_target('M1', 30)
         self.add_target('M2', 45)
@@ -525,6 +552,7 @@ class FramingTests(unittest.TestCase):
         self.app.commit()
         self.assertEqual(self.app.targets[2]['duration_min'], 60)
 
+    # 対象位置を選択せずに全枠表示と濃さ変更ができること。ONで2枠、濃さ変更で80が描画に渡り、OFFで2枠を消去して表示数が0になること。
     def test_all_frames_toggle_and_intensity_without_selected_position(self):
         self.add_target('M1', 30)
         self.add_target('M2', 45)
@@ -544,6 +572,7 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(self.sent_options['previous_count'], 2)
         self.assertEqual(self.app.stellarium_frame_count, 0)
 
+    # 撮影枠の濃さ・太さスライダーを確認する。濃さは50〜100で初期値100、変更した濃さ75と太さ8がそれぞれ描画に渡ること。
     def test_frame_style_sliders(self):
         self.assertEqual(self.app.intensity_slider.minimum(), 50)
         self.assertEqual(self.app.intensity_slider.maximum(), 100)
@@ -553,6 +582,7 @@ class FramingTests(unittest.TestCase):
         self.sent_frame(lambda: self.app.thickness_slider.setValue(8))
         self.assertEqual(self.sent_options['thickness'], 8)
 
+    # 対象カードの描画を確認する。登録直後と開始時刻変更後に一覧アイコンがあり、カードの画像サイズが75×50ピクセルになること。
     def test_target_card_rendering_and_icon_updates(self):
         self.add_target('M1', 30)
         item = self.app.tree.topLevelItem(0)
