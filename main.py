@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from target_dialog import ROTATION_RANGE, TargetDialog
+from target_dialog import MOSAIC_TARGET_NAME_MAX_LENGTH, ROTATION_RANGE, TargetDialog
 from frame_dialog import FrameDialog
 from seestar_client import SeestarClient
 
@@ -814,8 +814,19 @@ class App(QMainWindow):
         try:
             # Keep additional imported target settings when editing.
             t = copy.deepcopy(self.targets[self.editing]) if self.editing is not None else {}
+            extended_mosaic = self.editing is None and self.target_dialog.extended_mosaic.isChecked()
+            name_field = self.v['name']
+            name = name_field.text()
+            if name != t.get('target_name'):
+                if not name.strip():
+                    raise ValueError('天体名を入力してください。')
+                if extended_mosaic and len(name) > MOSAIC_TARGET_NAME_MAX_LENGTH:
+                    raise ValueError('拡張モザイクの場合は天文名は１７文字以内にしてください。')
+                if not name_field.hasAcceptableInput():
+                    raise ValueError(name_field.toolTip())
+                name = name.strip()
             t.update(target_id=t.get('target_id', secrets.randbelow(900000000)+100000000),
-                     target_name=self.v['name'].text().strip(), alias_name=t.get('alias_name', ''),
+                     target_name=name, alias_name=t.get('alias_name', ''),
                      target_ra_dec=[self.input_number('ra', 0, 24-1e-10, '赤経'), self.input_number('dec', -90, 90, '赤緯')],
                      duration_min=int(self.v['duration'].text()),
                      lp_filter=self.lp.isChecked(), camera_mode='tele')
@@ -829,10 +840,7 @@ class App(QMainWindow):
                 t.pop('mosaic', None)
             candidates = copy.deepcopy(self.targets)
             committed = [t]
-            extended_mosaic = self.editing is None and self.target_dialog.extended_mosaic.isChecked()
             if extended_mosaic:
-                if not t['target_name']:
-                    raise ValueError('天体名を入力してください。')
                 mosaic = t.get('mosaic') or {}
                 width = number(self.v['fov_width'].text(), 0.01, 30, '横画角')
                 height = number(self.v['fov_height'].text(), 0.01, 30, '縦画角')
