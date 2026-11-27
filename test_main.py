@@ -28,7 +28,7 @@ class StartupTests(unittest.TestCase):
             ('2027-01-01T05:59:00', '29:59', date(2026, 12, 31)),
             ('2027-01-01T06:00:00', '06:00', date(2027, 1, 1)),
         ):
-            with self.subTest(local=local):
+            with self.subTest(local=local), patch('main.sync_stellarium_time_enabled', return_value=True):
                 window = App({
                     'time': {'local': local},
                     'location': {'latitude': 35.68, 'longitude': 139.76},
@@ -48,7 +48,7 @@ class StartupTests(unittest.TestCase):
     def test_option_persists_only_when_accepted_and_controls_next_startup(self):
         status = {
             'time': {'local': '2027-01-01T01:30:00'},
-            'location': {'latitude': 35.68, 'longitude': 139.76},
+            'location': {'latitude': 34.69, 'longitude': 135.50},
         }
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'APPDATA': folder}):
             window = App()
@@ -76,8 +76,16 @@ class StartupTests(unittest.TestCase):
                       patch('main.urlopen', return_value=io.StringIO(json.dumps(status))) as request):
                     application.return_value.exec.return_value = 0
                     self.assertEqual(run_application(), 0)
-                    create_window.assert_called_once_with(status if sync_enabled else None)
+                    create_window.assert_called_once_with(status)
                     request.assert_called_once()
+                started_window = App(status)
+                started_window.startup_timer.stop()
+                started_window.poll_timer.stop()
+                self.addCleanup(started_window.deleteLater)
+                self.assertEqual(started_window.v['start'].text(), '25:30' if sync_enabled else '21:00')
+                self.assertEqual(started_window.observation_date, date(2026, 12, 31))
+                self.assertEqual(started_window.observation_latitude, 34.69)
+                self.assertEqual(started_window.observation_longitude, 135.50)
                 with (patch('main.QApplication'),
                       patch('main.App') as create_window,
                       patch('main.QMessageBox.warning') as warning,
@@ -94,6 +102,8 @@ class FramingTests(unittest.TestCase):
         cls.qt = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        settings_folder = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch.dict(os.environ, {'APPDATA': settings_folder}))
         self.app = App()
         self.app.startup_timer.stop()
         error_patch = patch.object(self.app, 'error', side_effect=lambda error: self.fail(str(error)))
@@ -143,8 +153,12 @@ class FramingTests(unittest.TestCase):
         args = self.sent_frame(lambda: self.app.angle_slider.setValue(-75))
         self.assertEqual(args[3], -75)
         self.assertEqual(self.app.v['angle'].text(), '-75')
+        self.assertEqual(self.app.angle_slider.minimum(), -90)
+        self.assertEqual(self.app.angle_slider.maximum(), 90)
+        self.app.v['angle'].setText('90')
+        self.assertEqual(self.app.angle_slider.value(), 90)
         self.app.v['angle'].setText('120')
-        self.assertEqual(self.app.angle_slider.value(), 120)
+        self.assertEqual(self.app.angle_slider.value(), 90)
 
     def test_json_dialogs_round_trip_rotation_and_scale(self):
         self.app.v['angle'].setText('45')
@@ -166,9 +180,9 @@ class FramingTests(unittest.TestCase):
 
     def test_qr_dialog_has_image(self):
         self.app.show_qr('https://example.com/plan')
-        dialog = self.app.findChild(QDialog)
-        self.assertIsNotNone(dialog)
-        labels = dialog.findChildren(QLabel)
+        visible_dialogs = [dialog for dialog in self.app.findChildren(QDialog) if dialog.isVisible()]
+        self.assertEqual(len(visible_dialogs), 1)
+        labels = visible_dialogs[0].findChildren(QLabel)
         self.assertTrue(any(not label.pixmap().isNull() for label in labels))
 
     def test_scale_automatically_enables_framing(self):
@@ -301,15 +315,61 @@ class FramingTests(unittest.TestCase):
         self.app.tree.clearSelection()
         self.app.frame_timer.stop()
         args = self.sent_frame(lambda: self.app.show_all.setChecked(True))
-        self.assertEqual(args[1:3], (None, None))
+        self.assertEqual(args[1:3], (5, 40))
         self.assertEqual(len(self.sent_options['frames']), 1)
+        self.assertEqual(self.sent_options['start_min'], 1290)
         args = self.sent_frame(lambda: self.app.show_all.setChecked(False))
         self.assertEqual(args[1:3], (None, None))
         self.assertIsNone(self.sent_options['frames'])
         self.assertEqual(self.sent_options['previous_count'], 1)
         self.assertNotIn('start_min', self.sent_options)
 
+    def test_loading_restores_suffixed_names_when_original_is_present(self):
+        for name in ('Pleiadesx P1', 'Pleiadesx_2 P1', 'Other_2 P1'):
+            self.add_target(name, 30)
+        original = list(self.app.targets)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'plan.json'
+            path.write_text(json.dumps(dict(plan_name='M1', list=original)), encoding='utf-8')
+            with patch('main.QFileDialog.getOpenFileName', return_value=(str(path), '')), \
+                    patch.object(self.app, 'confirm', return_value=True):
+                self.app.load()
+                path.write_text(json.dumps(dict(plan_name='M1', list=original[1:])), encoding='utf-8')
+                self.app.append_plan()
+
+        expected = ['Pleiadesx P1', 'Pleiadesx P1', 'Other_2 P1', 'Pleiadesx P1', 'Other_2 P1']
+        self.assertEqual([self.app.tree.topLevelItem(i).text(0) for i in range(5)], expected)
+
+    def test_appending_same_plan_twice_draws_only_the_selected_group(self):
+        self.add_target('M1 P1', 30)
+        self.add_target('M1 P2', 30)
+        original = list(self.app.targets)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'plan.json'
+            path.write_text(json.dumps(dict(plan_name='M1', list=original)), encoding='utf-8')
+            with patch('main.QFileDialog.getOpenFileName', return_value=(str(path), '')):
+                self.app.append_plan()
+                self.app.append_plan()
+
+        for first in (2, 4):
+            self.sent_frame(lambda: self.app.tree.setCurrentItem(self.app.tree.topLevelItem(first + 1)))
+            frames = self.sent_options['frames']
+            self.assertEqual(frames, self.app.targets[first:first + 2])
+            self.assertEqual([frame['target_name'] for frame in frames], ['M1 P1', 'M1 P2'])
+            self.assertEqual(self.sent_options['selected_index'], 1)
+            self.assertTrue(self.sent_options['dim_unselected'])
+
+        self.sent_frame(lambda: self.app.show_all.setChecked(True))
+        self.assertEqual(self.sent_options['frames'], self.app.targets)
+        self.assertEqual(self.sent_options['selected_index'], 5)
+        self.assertFalse(self.sent_options['dim_unselected'])
+
     def test_extended_mosaic_preview_matches_added_panels(self):
+        self.app.v['duration'].setText('10')
+        self.app.save_settings()
+        self.app.v['duration'].clear()
+        self.app.restore_settings()
+        self.assertEqual(self.app.v['duration'].text(), '10')
         dialog = self.app.target_dialog
         self.assertTrue(dialog.panel_overlap.isHidden())
         self.assertEqual(dialog.panel_overlap.value(), 20)
@@ -344,7 +404,8 @@ class FramingTests(unittest.TestCase):
         targets = self.app.targets
         self.assertEqual([t['target_name'] for t in targets],
                          [f'M1 P{i}' for i in range(1, 7)])
-        self.assertEqual([t['start_min'] for t in targets], list(range(1260, 1440, 30)))
+        self.assertEqual([t['start_min'] for t in targets], list(range(1260, 1320, 10)))
+        self.assertEqual([t['duration_min'] for t in targets], [10] * 6)
         self.assertEqual(len({t['target_id'] for t in targets}), 6)
         for frame, target in zip(preview, targets):
             self.assertEqual(tuple(target['target_ra_dec']), frame['target_ra_dec'])
@@ -353,11 +414,17 @@ class FramingTests(unittest.TestCase):
             self.assertTrue(target['lp_filter'])
         self.assertFalse(dialog.extended_mosaic.isChecked())
         self.assertTrue(dialog.panel_overlap.isHidden())
-        self.assertEqual(dialog.panel_overlap.value(), 20)
+        self.assertEqual(dialog.panel_overlap.value(), 40)
         self.assertTrue(all(control.isEnabled() for control in controls))
         self.assertEqual((dialog.panel_rows.value(), dialog.panel_columns.value()), (1, 1))
 
+        self.app.save_settings()
+        dialog.panel_overlap.setValue(20)
+        self.app.restore_settings()
+        self.assertEqual(dialog.panel_overlap.value(), 40)
+
     def test_select_syncs_position_framing_and_target_start_without_fetch(self):
+        self.app.model_combo.setCurrentText('S30 Pro')
         self.add_target('M1', 30)
         self.add_target('M2', 45)
         self.app.targets[1]['mosaic'] = dict(angle=45, scale=2, star_map_angle=5)
@@ -368,9 +435,9 @@ class FramingTests(unittest.TestCase):
         args = self.sent_frame(select)
         self.assertEqual(args[1:4], (5, 40, 45))
         self.assertAlmostEqual(args[4], 2)
-        self.assertEqual(args[5:7], (2.25, 4.0))
+        self.assertEqual(args[5:7], (2.24, 3.99))
         self.assertNotIn('reference', self.app.v)
-        self.assertEqual(self.sent_options['start_min'], 1290)
+        self.assertEqual(self.sent_options['start_min'], 1335)
         self.assertIsNone(self.sent_options['plan_date'])
         self.assertEqual(self.app.v['start'].text(), '21:00')
 
@@ -423,7 +490,7 @@ class FramingTests(unittest.TestCase):
         self.app.lp.setChecked(True)
         self.add_target('M2', 45)
         columns = [self.app.tree.headerItem().text(i) for i in range(self.app.tree.columnCount())]
-        self.assertEqual(columns.index('LPフィルター') + 1, columns.index('回転°'))
+        self.assertEqual(columns.index('LP') + 1, columns.index('回転'))
         self.assertEqual(self.app.tree.topLevelItem(0).text(3), 'OFF')
         self.assertEqual(self.app.tree.topLevelItem(1).text(3), 'ON')
         self.app.tree.setCurrentItem(self.app.tree.topLevelItem(0))
@@ -480,8 +547,9 @@ class FramingTests(unittest.TestCase):
     def test_frame_style_sliders(self):
         self.assertEqual(self.app.intensity_slider.minimum(), 50)
         self.assertEqual(self.app.intensity_slider.maximum(), 100)
-        self.sent_frame(lambda: self.app.intensity_slider.setValue(100))
-        self.assertEqual(self.sent_options['intensity'], 100)
+        self.assertEqual(self.app.intensity_slider.value(), 100)
+        self.sent_frame(lambda: self.app.intensity_slider.setValue(75))
+        self.assertEqual(self.sent_options['intensity'], 75)
         self.sent_frame(lambda: self.app.thickness_slider.setValue(8))
         self.assertEqual(self.sent_options['thickness'], 8)
 

@@ -1,7 +1,8 @@
 """Target input dialog shared by adding and editing plan targets."""
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRegularExpression, Qt
+from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QSlider,
     QSpinBox, QVBoxLayout,
@@ -12,6 +13,23 @@ from planner import DEFAULT_PANEL_OVERLAP_PERCENT, coordinate_text, parse_coordi
 
 ROTATION_RANGE = (-90, 90)
 ARCSECOND_STEPS = (3600, 60, 1)
+TARGET_NAME_MAX_LENGTH = 20
+MOSAIC_TARGET_NAME_MAX_LENGTH = 17
+
+
+class TargetNameEdit(QLineEdit):
+    def keyPressEvent(self, event):
+        validator = self.validator()
+        if (validator is not None and not self.hasAcceptableInput()
+                and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace)):
+            # Allow incremental deletion from a name that exceeds the current limit.
+            self.setValidator(None)
+            try:
+                super().keyPressEvent(event)
+            finally:
+                self.setValidator(validator)
+            return
+        super().keyPressEvent(event)
 
 
 class CoordinateEdit(QLineEdit):
@@ -77,9 +95,12 @@ class TargetDialog(QDialog):
         self.setWindowTitle('撮影対象の設定')
         self.setMinimumWidth(360)
         self.v = {key: QLineEdit(value) for key, value in {
-            'name': '', 'duration': '30',
+            'duration': '30',
             'angle': '0', 'scale': '1.0',
         }.items()}
+        name = self.v['name'] = TargetNameEdit()
+        name.setValidator(QRegularExpressionValidator(name))
+        self.update_name_limit(False)
         self.v.update(ra=CoordinateEdit(ra=True), dec=CoordinateEdit(ra=False))
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -112,6 +133,7 @@ class TargetDialog(QDialog):
         self.setTabOrder(self.v['duration'], self.lp)
         self.setTabOrder(self.lp, self.v['angle'])
         self.extended_mosaic = QCheckBox('拡張モザイク')
+        self.extended_mosaic.toggled.connect(self.update_name_limit)
         self.panel_overlap = QSpinBox()
         self.panel_overlap.setRange(0, 99)
         self.panel_overlap.setSuffix('%')
@@ -142,3 +164,10 @@ class TargetDialog(QDialog):
         self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('キャンセル')
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
+
+    def update_name_limit(self, extended_mosaic):
+        limit = MOSAIC_TARGET_NAME_MAX_LENGTH if extended_mosaic else TARGET_NAME_MAX_LENGTH
+        name = self.v['name']
+        name.validator().setRegularExpression(QRegularExpression(rf'[A-Za-z0-9 _-]{{1,{limit}}}'))
+        name.setToolTip(
+            f'天体名は半角英数字、半角スペース、ハイフン（-）、アンダースコア（_）で{limit}文字以内にしてください。')
