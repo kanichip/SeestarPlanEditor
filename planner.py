@@ -7,7 +7,7 @@ import math
 import os
 import re
 from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -269,7 +269,7 @@ for (var i = 0; i < ids.length; ++i) {
 def draw_stellarium_frame(base_url, ra, dec, angle, scale=1, width=2.25, height=4.0,
                           *, start_min=None, plan_date=None, intensity=50,
                           frames=None, previous_count=0, selected_index=None, thickness=3,
-                          panel_number=None):
+                          panel_number=None, dim_unselected=False):
     """Replace this application's sky image via Stellarium Remote Control."""
     parsed = urlsplit(base_url)
     if parsed.scheme != 'http' or not parsed.hostname:
@@ -298,34 +298,40 @@ def draw_stellarium_frame(base_url, ra, dec, angle, scale=1, width=2.25, height=
                                    outline=color, width=thickness)
     textures = {}
 
-    def frame_texture(label):
-        if label not in textures:
-            filename = f'{texture}.png'
+    def frame_texture(label, dimmed):
+        key = (label, dimmed)
+        if key not in textures:
+            stem = texture
             rendered = image
             if label is not None:
-                filename = f'{texture}_panel_{label}.png'
+                stem += f'_panel_{label}'
                 rendered = image.copy()
                 font = ImageFont.load_default(size=max(1, round(min(image.size) * 0.14)))
                 ImageDraw.Draw(rendered).text((image.width / 2, image.height / 2), str(label),
                                               fill=color, font=font, anchor='mm')
+            if dimmed:
+                stem += '_dim'
+                # Stellarium composites sky images additively using their RGB values.
+                rendered = ImageEnhance.Brightness(rendered).enhance(0.35)
+            filename = f'{stem}.png'
             buffer = BytesIO()
             rendered.save(buffer, format='PNG')
             source = buffer.getvalue()
             destination = scripts / filename
             if not destination.exists() or destination.read_bytes() != source:
                 destination.write_bytes(source)
-            textures[label] = filename
-        return textures[label]
+            textures[key] = filename
+        return textures[key]
 
     commands = ['core.removeSkyImage("seestar_planner_frame");']
     commands.extend(f'core.removeSkyImage("seestar_planner_all_{i}");'
                     for i in range(previous_count))
-    def add_frame(ident, frame_ra, frame_dec, frame_angle, frame_scale, label=None):
+    def add_frame(ident, frame_ra, frame_dec, frame_angle, frame_scale, label=None, *, dimmed=False):
         corners = sky_frame_corners(frame_ra, frame_dec, frame_angle, frame_scale, width, height)
         coordinates = ', '.join(str(v) for point in corners for v in point)
         if intensity > 0:
             brightness = 20 - intensity * 0.12
-            commands.append(f'core.loadSkyImage({json.dumps(ident)}, {json.dumps(frame_texture(label))}, '
+            commands.append(f'core.loadSkyImage({json.dumps(ident)}, {json.dumps(frame_texture(label, dimmed))}, '
                             f'{coordinates}, 2.5, {brightness}, true, "EqJ2000");')
     if frames is not None:
         for i, target in enumerate(frames):
@@ -336,7 +342,7 @@ def draw_stellarium_frame(base_url, ra, dec, angle, scale=1, width=2.25, height=
                 mosaic = target.get('mosaic') or {}
                 add_frame(f'seestar_planner_all_{i}', *target['target_ra_dec'],
                           mosaic.get('angle', 0),
-                          mosaic.get('scale', 1), label)
+                          mosaic.get('scale', 1), label, dimmed=dim_unselected and i != selected_index)
     if ra is not None and (frames is None or selected_index is None):
         add_frame('seestar_planner_frame', ra, dec, angle, scale, panel_number)
     script = '\n'.join(commands)

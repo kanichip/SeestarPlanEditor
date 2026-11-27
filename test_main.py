@@ -265,6 +265,46 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(self.sent_options['previous_count'], 1)
         self.assertNotIn('start_min', self.sent_options)
 
+    def test_loading_restores_suffixed_names_when_original_is_present(self):
+        for name in ('Pleiadesx P1', 'Pleiadesx_2 P1', 'Other_2 P1'):
+            self.add_target(name, 30)
+        original = list(self.app.targets)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'plan.json'
+            path.write_text(json.dumps(dict(plan_name='M1', list=original)), encoding='utf-8')
+            with patch('main.QFileDialog.getOpenFileName', return_value=(str(path), '')), \
+                    patch.object(self.app, 'confirm', return_value=True):
+                self.app.load()
+                path.write_text(json.dumps(dict(plan_name='M1', list=original[1:])), encoding='utf-8')
+                self.app.append_plan()
+
+        expected = ['Pleiadesx P1', 'Pleiadesx P1', 'Other_2 P1', 'Pleiadesx P1', 'Other_2 P1']
+        self.assertEqual([self.app.tree.topLevelItem(i).text(0) for i in range(5)], expected)
+
+    def test_appending_same_plan_twice_draws_only_the_selected_group(self):
+        self.add_target('M1 P1', 30)
+        self.add_target('M1 P2', 30)
+        original = list(self.app.targets)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'plan.json'
+            path.write_text(json.dumps(dict(plan_name='M1', list=original)), encoding='utf-8')
+            with patch('main.QFileDialog.getOpenFileName', return_value=(str(path), '')):
+                self.app.append_plan()
+                self.app.append_plan()
+
+        for first in (2, 4):
+            self.sent_frame(lambda: self.app.tree.setCurrentItem(self.app.tree.topLevelItem(first + 1)))
+            frames = self.sent_options['frames']
+            self.assertEqual(frames, self.app.targets[first:first + 2])
+            self.assertEqual([frame['target_name'] for frame in frames], ['M1 P1', 'M1 P2'])
+            self.assertEqual(self.sent_options['selected_index'], 1)
+            self.assertTrue(self.sent_options['dim_unselected'])
+
+        self.sent_frame(lambda: self.app.show_all.setChecked(True))
+        self.assertEqual(self.sent_options['frames'], self.app.targets)
+        self.assertEqual(self.sent_options['selected_index'], 5)
+        self.assertFalse(self.sent_options['dim_unselected'])
+
     def test_extended_mosaic_preview_matches_added_panels(self):
         dialog = self.app.target_dialog
         self.assertTrue(dialog.panel_overlap.isHidden())

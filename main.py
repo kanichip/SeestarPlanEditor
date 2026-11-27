@@ -7,10 +7,12 @@ import json
 import math
 import os
 import queue
+import re
 import secrets
 import sys
 import threading
 from datetime import date, datetime, timedelta
+from itertools import count
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -18,7 +20,7 @@ from urllib.request import urlopen
 from PySide6.QtCore import QItemSelectionModel, QPointF, QRectF, QSettings, QSignalBlocker, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog,
+    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -35,6 +37,13 @@ from planner import (DEFAULT_PANEL_OVERLAP_PERCENT, build_plan, calculate_altitu
 
 
 DEFAULT_STELLARIUM_URL = 'http://localhost:8090'
+SYNC_STELLARIUM_TIME = 'sync_stellarium_time_on_startup'
+
+
+def sync_stellarium_time_enabled(settings):
+    if settings.contains(SYNC_STELLARIUM_TIME):
+        return settings.value(SYNC_STELLARIUM_TIME, type=bool)
+    return settings.value('use_stellarium_start_time', True, type=bool)
 
 
 # Approximate telephoto field of view (short edge, long edge), in degrees.
@@ -216,13 +225,16 @@ class App(QMainWindow):
             if after_midnight:
                 self.observation_date -= timedelta(days=1)
                 start_minutes += 24 * 60
-            initial_start = clock(start_minutes)
+            if sync_stellarium_time_enabled(self.settings):
+                initial_start = clock(start_minutes)
             self.observation_latitude = float(stellarium_status['location']['latitude'])
             self.observation_longitude = float(stellarium_status['location']['longitude'])
         self.setWindowTitle('Seestar Plan Editor v0.4')
         self.resize(350, 450)
         self.setMinimumSize(350, 400)
         self.targets = []
+        self.target_groups = {}
+        self.group_numbers = count(1)
         self.editing = None
         self.dirty = False
         self.form_dirty = False
@@ -346,6 +358,7 @@ class App(QMainWindow):
         self.transfer_action.setEnabled(False)
         other_menu = self.menuBar().addMenu('その他')
         other_menu.addAction('撮影枠', self.frame_dialog.edit)
+        other_menu.addAction('オプション', self.edit_options)
         self.guide_action = other_menu.addAction('ガイド表示')
         self.guide_action.setCheckable(True)
         self.guide_action.toggled.connect(self.guide_label.setVisible)
@@ -388,6 +401,25 @@ class App(QMainWindow):
         self.startup_timer.setSingleShot(True)
         self.startup_timer.timeout.connect(self.clear_startup_frames)
         self.startup_timer.start(0)
+
+    def edit_options(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('オプション')
+        layout = QVBoxLayout(dialog)
+        use_stellarium_time = QCheckBox('起動時にStellariumのローカル時刻を開始時刻に取り込む')
+        use_stellarium_time.setChecked(sync_stellarium_time_enabled(self.settings))
+        layout.addWidget(use_stellarium_time)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.settings.setValue(SYNC_STELLARIUM_TIME, use_stellarium_time.isChecked())
+            self.settings.sync()
+            if self.settings.status() != QSettings.Status.NoError:
+                self.error('設定ファイルを保存できませんでした。')
+        dialog.deleteLater()
 
     def restore_settings(self):
         model = self.settings.value('model', 'S50 Pro')
@@ -647,6 +679,19 @@ class App(QMainWindow):
         options = {} if start is None else dict(
             start_min=start, plan_date=self.stellarium_plan_dates.get(args[0]))
         frames = copy.deepcopy(self.targets) if self.show_all.isChecked() else None
+        selected_index = self.editing
+        dim_unselected = False
+        if frames is None and self.editing is not None:
+            selected_id = self.targets[self.editing]['target_id']
+            group = self.target_groups.get(selected_id)
+            if group is not None:
+                frames = copy.deepcopy([
+                    target for target in self.targets
+                    if self.target_groups.get(target['target_id']) == group
+                ])
+                selected_index = next(i for i, target in enumerate(frames)
+                                      if target['target_id'] == selected_id)
+                dim_unselected = True
         if args[1] is not None and self.editing is None and self.target_dialog.extended_mosaic.isChecked():
             _, ra, dec, angle, scale, width, height = args
             frames = (frames or []) + [
@@ -659,8 +704,8 @@ class App(QMainWindow):
         elif not has_position and not self.frame_deselected and frames is None and len(self.committed_frames) > 1:
             frames = self.committed_frames
         options.update(intensity=intensity, thickness=self.thickness_slider.value(), frames=frames,
-                       previous_count=self.stellarium_frame_count, selected_index=self.editing,
-                       panel_number=panel_number)
+                       previous_count=self.stellarium_frame_count, selected_index=selected_index,
+                       panel_number=panel_number, dim_unselected=dim_unselected)
         def work():
             try:
                 plan_date = draw_stellarium_frame(*args, **options)
@@ -761,6 +806,10 @@ class App(QMainWindow):
                                     self.target_dialog.panel_columns.value(),
                                     overlap_percent=self.target_dialog.panel_overlap.value())
 
+    def register_target_group(self, targets):
+        group = next(self.group_numbers)
+        self.target_groups.update((target['target_id'], group) for target in targets)
+
     def commit(self):
         try:
             # Keep additional imported target settings when editing.
@@ -780,7 +829,8 @@ class App(QMainWindow):
                 t.pop('mosaic', None)
             candidates = copy.deepcopy(self.targets)
             committed = [t]
-            if self.editing is None and self.target_dialog.extended_mosaic.isChecked():
+            extended_mosaic = self.editing is None and self.target_dialog.extended_mosaic.isChecked()
+            if extended_mosaic:
                 if not t['target_name']:
                     raise ValueError('天体名を入力してください。')
                 mosaic = t.get('mosaic') or {}
@@ -802,6 +852,8 @@ class App(QMainWindow):
             else:
                 candidates[self.editing] = t
             self.targets = build_plan(self.v['plan'].text(), candidates, self.v['start'].text())['list']
+            if extended_mosaic:
+                self.register_target_group(committed)
             self.dirty = True
             self.refresh()
             self.reset()
@@ -860,9 +912,12 @@ class App(QMainWindow):
     def select(self, _=None):
         selection = self.tree.selectedItems()
         if not selection:
+            was_editing = self.editing is not None
             self.editing = None
             self.frame_deselected = True
             self.stellarium_selection_start = None
+            if was_editing:
+                self.schedule_stellarium_frame()
             return
         current = self.tree.currentItem()
         active = current if current in selection else selection[0]
@@ -912,10 +967,13 @@ class App(QMainWindow):
         if selected:
             candidates = [target for index, target in enumerate(self.targets) if index not in selected]
             try:
-                self.targets = schedule_targets(candidates, self.v['start'].text())
+                targets = schedule_targets(candidates, self.v['start'].text())
             except ValueError as exc:
                 self.error(exc)
                 return
+            for index in selected:
+                self.target_groups.pop(self.targets[index]['target_id'], None)
+            self.targets = targets
             self.reset()
             self.refresh()
             self.dirty = True
@@ -935,6 +993,18 @@ class App(QMainWindow):
         except Exception as exc:
             self.error(exc)
 
+    @staticmethod
+    def restore_duplicate_target_names(targets, existing_targets=()):
+        names = {target['target_name'] for target in existing_targets}
+        names.update(target['target_name'] for target in targets)
+        for target in targets:
+            match = re.fullmatch(r'(.+)_([2-9]|[1-9][0-9]+)( (?:P|パネル)[1-9][0-9]*)?',
+                                 target['target_name'])
+            if match:
+                original = match[1] + (match[3] or '')
+                if original in names:
+                    target['target_name'] = original
+
     def load(self):
         if (self.dirty or self.form_dirty) and not self.confirm('編集内容', '現在の編集を破棄して開きますか？'):
             return
@@ -944,10 +1014,12 @@ class App(QMainWindow):
         try:
             data = json.loads(Path(path).read_text(encoding='utf-8-sig'))
             p = build_plan(data['plan_name'], data['list'])
+            self.restore_duplicate_target_names(p['list'])
             start = clock(p['list'][0]['start_min'])
             targets = schedule_targets(p['list'], start)
             self.v['start'].setText(start)
             self.targets = targets
+            self.target_groups.clear()
             self.stellarium_plan_dates.clear()
             self.v['plan'].setText(p['plan_name'])
             self.reset()
@@ -967,6 +1039,7 @@ class App(QMainWindow):
             data = json.loads(Path(path).read_text(encoding='utf-8-sig'))
             plan = build_plan(data['plan_name'], data['list'])
             additions = copy.deepcopy(plan['list'])
+            self.restore_duplicate_target_names(additions, self.targets)
             used_ids = {target['target_id'] for target in self.targets}
             for target in additions:
                 while target['target_id'] in used_ids:
@@ -974,6 +1047,7 @@ class App(QMainWindow):
                 used_ids.add(target['target_id'])
             targets = schedule_targets(self.targets + additions, self.v['start'].text())
             self.targets = targets
+            self.register_target_group(additions)
             self.last_plan_path = path
             self.reset()
             self.refresh()

@@ -224,6 +224,27 @@ class PlannerTests(unittest.TestCase):
         self.assertIn('2.5, 8.0, true', script)
         self.assertNotIn('core.setDate', script)
 
+    def test_unselected_frame_texture_has_dimmer_rgb(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as folder, patch.dict('os.environ', APPDATA=folder):
+            with patch('planner.urlopen', return_value=io.BytesIO(b'ok')) as request:
+                draw_stellarium_frame('http://localhost:8090', 5, 40, 0,
+                                      frames=[self.target(), self.target(123456790)],
+                                      selected_index=0, dim_unselected=True)
+                script = parse_qs(request.call_args.kwargs['data'].decode())['code'][0]
+            textures = Path(folder) / 'Stellarium' / 'scripts'
+            dimmed = next(textures.glob('*_dim.png'))
+            normal = dimmed.with_name(dimmed.name.replace('_dim.png', '.png'))
+            self.assertIn(f'"seestar_planner_all_0", "{normal.name}"', script)
+            self.assertIn(f'"seestar_planner_all_1", "{dimmed.name}"', script)
+            with Image.open(normal) as normal_image, Image.open(dimmed) as dimmed_image:
+                normal_pixel = normal_image.getpixel((0, 0))
+                dimmed_pixel = dimmed_image.getpixel((0, 0))
+                self.assertGreater(max(normal_pixel[:3]), 0)
+                self.assertEqual(dimmed_pixel[:3], tuple(int(v * 0.35) for v in normal_pixel[:3]))
+                self.assertEqual(dimmed_pixel[3], normal_pixel[3])
+
     def test_zero_intensity_removes_frames_without_loading(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict('os.environ', APPDATA=folder):
             with patch('planner.urlopen', return_value=io.BytesIO(b'ok')) as request:
