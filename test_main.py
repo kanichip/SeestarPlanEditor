@@ -21,6 +21,34 @@ class StartupTests(unittest.TestCase):
     def setUpClass(cls):
         cls.qt = QApplication.instance() or QApplication([])
 
+    # 旧INIのプランファイルパスを親フォルダーとして使い、保存先の変更が終了後のINIと次回起動に反映されること。
+    def test_last_plan_directory_is_migrated_and_remembered_after_save(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'APPDATA': folder}):
+            root = Path(folder)
+            settings = root / 'SeestarPlanEditor' / 'settings.ini'
+            settings.parent.mkdir()
+            previous = root / 'previous'
+            previous.mkdir()
+            settings.write_text(f'[General]\nlast_plan_path={(previous / "old.json").as_posix()}\n', encoding='utf-8')
+            window = App()
+            window.startup_timer.stop()
+            self.addCleanup(window.deleteLater)
+            self.assertEqual(Path(window.last_plan_directory), previous)
+            window.v['plan'].setText('M1')
+            saved = root / 'M1.json'
+            with (patch('main.build_plan', return_value={'plan_name': 'M1'}),
+                  patch('main.QFileDialog.getSaveFileName', return_value=(str(saved), '')) as save_dialog):
+                window.save()
+            self.assertEqual(Path(save_dialog.call_args.args[2]), previous / 'M1.json')
+            self.assertTrue(saved.is_file())
+            self.assertTrue(window.close())
+            reopened = App()
+            reopened.startup_timer.stop()
+            reopened.poll_timer.stop()
+            self.addCleanup(reopened.deleteLater)
+            self.assertEqual(Path(reopened.settings.value('last_plan_path', type=str)), root)
+            self.assertEqual(Path(reopened.last_plan_directory), root)
+
     # Stellarium の日付またぎを確認する。00:00〜05:59 は前日の24:00〜29:59になり、撮影枠の基準日も前日になること。23:59 と06:00 は当日扱いになること。
     def test_stellarium_start_time_and_observation_date(self):
         for local, expected_time, expected_date in (
@@ -60,7 +88,8 @@ class StartupTests(unittest.TestCase):
             window.poll_timer.stop()
             self.addCleanup(window.deleteLater)
             other_menu = next(menu for menu in window.menuBar().findChildren(QMenu) if menu.title() == 'その他')
-            option = next(action for action in other_menu.actions() if action.text() == 'OPTION')
+            self.assertNotIn('OPTION', [action.text() for action in other_menu.actions()])
+            option = next(action for action in other_menu.actions() if action.text() == 'オプション')
             initial_states = []
 
             def toggle_option(button):

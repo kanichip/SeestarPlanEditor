@@ -215,7 +215,12 @@ class App(QMainWindow):
     def __init__(self, stellarium_status=None):
         super().__init__()
         self.settings = open_settings()
-        self.last_plan_path = self.settings.value('last_plan_path', '')
+        self.last_plan_directory = str(self.settings.value('last_plan_path', '', type=str))
+        if self.last_plan_directory:
+            stored_path = Path(self.last_plan_directory)
+            # Older INI files stored the selected file instead of its directory.
+            if stored_path.is_file() or (stored_path.suffix.lower() == '.json' and not stored_path.is_dir()):
+                self.last_plan_directory = str(stored_path.parent)
         self.observation_date = date.today()
         self.observation_latitude = 35.68
         self.observation_longitude = 139.76
@@ -233,7 +238,7 @@ class App(QMainWindow):
                 initial_start = clock(start_minutes)
             self.observation_latitude = float(stellarium_status['location']['latitude'])
             self.observation_longitude = float(stellarium_status['location']['longitude'])
-        self.setWindowTitle('Seestar Plan Editor v0.5')
+        self.setWindowTitle('Seestar Plan Editor v0.5.1')
         self.resize(350, 450)
         self.setMinimumSize(350, 400)
         self.targets = []
@@ -367,7 +372,6 @@ class App(QMainWindow):
         self.guide_action.setCheckable(True)
         self.guide_action.toggled.connect(self.guide_label.setVisible)
         self.guide_action.toggled.connect(self.status.setVisible)
-        other_menu.addAction('OPTION', self.edit_options)
         self.tree.itemSelectionChanged.connect(self.select)
         self.tree.reordered.connect(self.reorder_targets)
         self.tree.itemDoubleClicked.connect(self.edit_target)
@@ -444,30 +448,11 @@ class App(QMainWindow):
             pass
         self.form_dirty = False
 
-    def edit_options(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle('OPTION')
-        layout = QVBoxLayout(dialog)
-        sync_time = QCheckBox('起動時のStellarium時刻の同期', dialog)
-        sync_time.setChecked(sync_stellarium_time_enabled(self.settings))
-        layout.addWidget(sync_time)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.settings.setValue(SYNC_STELLARIUM_TIME, sync_time.isChecked())
-            try:
-                self.sync_settings()
-            except OSError as exc:
-                self.error(exc)
-        dialog.deleteLater()
-
     def save_settings(self):
         self.settings.setValue('model', self.model_combo.currentText())
         self.settings.setValue('panel_overlap', self.target_dialog.panel_overlap.value())
         self.settings.setValue('panel_duration', self.v['duration'].text())
-        self.settings.setValue('last_plan_path', self.last_plan_path)
+        self.settings.setValue('last_plan_path', self.last_plan_directory)
         self.sync_settings()
 
     def sync_settings(self):
@@ -1020,9 +1005,11 @@ class App(QMainWindow):
             filename = p['plan_name']
             if not filename.lower().endswith('.json'):
                 filename += '.json'
-            path = QFileDialog.getSaveFileName(self, 'プランJSONを保存', filename, '撮影プラン (*.json)')[0]
+            suggested_path = str(Path(self.last_plan_directory) / filename) if self.last_plan_directory else filename
+            path = QFileDialog.getSaveFileName(self, 'プランJSONを保存', suggested_path, '撮影プラン (*.json)')[0]
             if path:
                 Path(path).write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding='utf-8')
+                self.last_plan_directory = str(Path(path).parent)
                 self.dirty = False
                 self.status.setText(f'保存しました：{path}')
         except Exception as exc:
@@ -1043,7 +1030,7 @@ class App(QMainWindow):
     def load(self):
         if (self.dirty or self.form_dirty) and not self.confirm('編集内容', '現在の編集を破棄して開きますか？'):
             return
-        path = QFileDialog.getOpenFileName(self, 'プランを開く', self.last_plan_path, '撮影プラン (*.json)')[0]
+        path = QFileDialog.getOpenFileName(self, 'プランを開く', self.last_plan_directory, '撮影プラン (*.json)')[0]
         if not path:
             return
         try:
@@ -1060,7 +1047,7 @@ class App(QMainWindow):
             self.reset()
             self.refresh()
             self.dirty = False
-            self.last_plan_path = path
+            self.last_plan_directory = str(Path(path).parent)
             self.status.setText('読み込みました。カメラは望遠に固定されます。')
         except Exception as exc:
             self.error(exc)
@@ -1068,7 +1055,8 @@ class App(QMainWindow):
     def append_plan(self):
         try:
             self.guard_form()
-            path = QFileDialog.getOpenFileName(self, 'プランを追加読み込み', self.last_plan_path, '撮影プラン (*.json)')[0]
+            path = QFileDialog.getOpenFileName(
+                self, 'プランを追加読み込み', self.last_plan_directory, '撮影プラン (*.json)')[0]
             if not path:
                 return
             data = json.loads(Path(path).read_text(encoding='utf-8-sig'))
@@ -1083,7 +1071,7 @@ class App(QMainWindow):
             targets = schedule_targets(self.targets + additions, self.v['start'].text())
             self.targets = targets
             self.register_target_group(additions)
-            self.last_plan_path = path
+            self.last_plan_directory = str(Path(path).parent)
             self.reset()
             self.refresh()
             self.dirty = True
